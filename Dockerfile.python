@@ -1,0 +1,27 @@
+# Python FastAPI AI Backend Container for LAMLA Guide AI
+# "It's Never Too Late To Study."
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies for document parsing and OCR
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir gunicorn uvicorn[standard] diskcache
+
+# Copy Python AI engine source code
+COPY python_ai/ ./python_ai/
+
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+
+EXPOSE 8000
+
+# Run multi-worker production ASGI server (4 workers for high concurrency)
+CMD ["gunicorn", "python_ai.api_server:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "300", "--keep-alive", "65"]

@@ -1,0 +1,7 @@
+node_modules
+.next
+.cache
+scratch
+python_ai/__pycache__
+*.log
+.git
