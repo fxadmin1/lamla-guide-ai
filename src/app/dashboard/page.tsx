@@ -247,6 +247,11 @@ export default function StudentDashboardPage() {
         if (codeFromUrl && window.history.replaceState) {
           window.history.replaceState({}, document.title, window.location.pathname);
         }
+      } else {
+        const urlScope = params.get("scope");
+        if (urlScope && ["groups", "planner", "exam_tracker", "leaderboard"].includes(urlScope)) {
+          setDashboardScope(urlScope as any);
+        }
       }
 
       try {
