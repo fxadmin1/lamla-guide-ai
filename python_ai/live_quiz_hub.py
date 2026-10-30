@@ -815,7 +815,8 @@ async def update_member_role(circle_id: str, req: UpdateRoleRequest):
     group = STORE.get(circle_id)
     if not group:
         raise HTTPException(status_code=404, detail="Study group not found.")
-    if group.get("created_by") != req.actor_user_id:
+    # Allow group creator to manage any member, or allow a student to remove/leave themselves
+    if group.get("created_by") != req.actor_user_id and not (req.role == "remove" and req.target_user_id == req.actor_user_id):
         raise HTTPException(status_code=403, detail="Only the group creator can manage assistant admins.")
     if req.target_user_id == group.get("created_by"):
         raise HTTPException(status_code=400, detail="Cannot change the group creator's role.")

@@ -86,6 +86,11 @@ export default function ClassCirclesWorkspace({
   const [submittingModal, setSubmittingModal] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
   const [shareLinkSuccess, setShareLinkSuccess] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deletingGroup, setDeletingGroup] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leavingGroup, setLeavingGroup] = useState(false);
 
   /* ── Load User's Study Groups from Unified Backend ── */
   const loadCircles = useCallback(async () => {
@@ -306,6 +311,58 @@ export default function ClassCirclesWorkspace({
     setTimeout(() => setShareLinkSuccess(false), 2000);
   };
 
+  const handleDeleteGroup = async () => {
+    if (!activeCircleId || !isOwner) return;
+    setDeletingGroup(true);
+    setDeleteError("");
+    try {
+      const res = await fetch(`/api/study-groups/${encodeURIComponent(activeCircleId)}?user_id=${encodeURIComponent(userId)}`, {
+        method: "DELETE",
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.detail || "Could not delete study group.");
+      }
+      setCircles((prev) => {
+        const remaining = prev.filter((c) => c.id !== activeCircleId);
+        setActiveCircleId(remaining[0]?.id || null);
+        return remaining;
+      });
+      setShowDeleteModal(false);
+    } catch (err: any) {
+      setDeleteError(err?.message || "Failed to delete study group.");
+    } finally {
+      setDeletingGroup(false);
+    }
+  };
+
+  const handleLeaveGroup = async () => {
+    if (!activeCircleId) return;
+    setLeavingGroup(true);
+    try {
+      const res = await fetch(`/api/study-groups/${encodeURIComponent(activeCircleId)}/role`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actor_user_id: userId,
+          target_user_id: userId,
+          role: "remove",
+        }),
+      });
+      if (res.ok) {
+        setCircles((prev) => {
+          const remaining = prev.filter((c) => c.id !== activeCircleId);
+          setActiveCircleId(remaining[0]?.id || null);
+          return remaining;
+        });
+        setShowLeaveModal(false);
+      }
+    } catch {
+    } finally {
+      setLeavingGroup(false);
+    }
+  };
+
   if (!userId) {
     return (
       <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-10 text-center bg-white dark:bg-slate-900">
@@ -495,6 +552,30 @@ export default function ClassCirclesWorkspace({
                     <Copy className="w-3.5 h-3.5 text-slate-500" />
                     <span>Code: {copySuccess ? "Copied!" : activeCircle.invite_code}</span>
                   </button>
+
+                  {isOwner ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeleteError("");
+                        setShowDeleteModal(true);
+                      }}
+                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
+                      title="Delete study group"
+                      aria-label="Delete study group"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowLeaveModal(true)}
+                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 text-xs font-medium transition-colors cursor-pointer"
+                      title="Leave this study group"
+                    >
+                      Leave
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -904,6 +985,97 @@ export default function ClassCirclesWorkspace({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Delete Study Group Modal */}
+      {showDeleteModal && activeCircle && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Delete Study Group
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  This action is permanent and cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Are you sure you want to delete <strong>{activeCircle.name}</strong> ({activeCircle.course_code})? All active quiz rooms, schedules, and standings for this group will be deleted.
+            </p>
+
+            {deleteError && (
+              <p className="text-xs text-red-600">{deleteError}</p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowDeleteModal(false)}
+                disabled={deletingGroup}
+                className="px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteGroup}
+                disabled={deletingGroup}
+                className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                {deletingGroup ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                <span>{deletingGroup ? "Deleting..." : "Delete group"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leave Study Group Modal */}
+      {showLeaveModal && activeCircle && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-sm w-full p-6 shadow-xl space-y-4">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Leave Study Group
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Are you sure you want to leave <strong>{activeCircle.name}</strong>? You can rejoin later using the invite code.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowLeaveModal(false)}
+                disabled={leavingGroup}
+                className="px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleLeaveGroup}
+                disabled={leavingGroup}
+                className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                {leavingGroup ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                <span>{leavingGroup ? "Leaving..." : "Leave"}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
