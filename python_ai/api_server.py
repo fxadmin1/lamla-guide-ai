@@ -111,7 +111,7 @@ class RateLimiter:
 
 
 RATE_LIMITER = RateLimiter()
-STATIC_EXTS = (".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf")
+STATIC_EXTS = (".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".mp4", ".webm", ".wav", ".mp3")
 STATIC_PREFIXES = ("/_next/static/", "/icons/", "/feature_showcase_", "/status_cards_")
 
 

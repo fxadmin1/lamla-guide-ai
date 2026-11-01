@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 import httpx
 import uvicorn
 from fastapi import Request, Response
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -221,6 +221,11 @@ unified_app.router.lifespan_context = _unified_lifespan
 )
 async def proxy_website_to_nextjs(request: Request, full_path: str):
     """Stream all Website UI, static asset, and Next.js API traffic seamlessly through Python."""
+    # Fast direct delivery for static public files (videos, images, downloads)
+    local_public_file = ROOT_DIR / "public" / full_path
+    if request.method in ("GET", "HEAD") and ".." not in full_path and local_public_file.is_file():
+        return FileResponse(str(local_public_file))
+
     if _http_client is None:
         return Response("Website engine is initializing...", status_code=503)
 
