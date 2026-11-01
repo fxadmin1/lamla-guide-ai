@@ -105,12 +105,12 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // Universal large file upload limit: All students (Free, Standard, Premium) can upload large files up to 1GB
+    // Safe file upload limit (up to 60 MB for slide decks & PDFs)
     if (file) {
-      const maxBytes = 1024 * 1024 * 1024; // 1 GB
+      const maxBytes = 60 * 1024 * 1024; // 60 MB
       if (file.size > maxBytes) {
         return NextResponse.json({
-          error: "File size exceeds the 1 GB maximum limit. Please upload files under 1 GB.",
+          error: "File size exceeds the 60 MB maximum limit. Please upload files under 60 MB.",
           code: "FILE_TOO_LARGE",
         }, { status: 400 });
       }

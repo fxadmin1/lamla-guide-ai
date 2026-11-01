@@ -367,25 +367,27 @@ export default function LiveQuizRoom({
     };
   }, [circleId, userId, myName, fetchRoomState, applyServerState]);
 
-  /* ── HTTP fallback polling ── */
-  useEffect(() => {
-    if (!circleId || !userId) return;
-    const intervalMs = wsConnected ? 6000 : 2000;
-    const t = setInterval(fetchRoomState, intervalMs);
-    return () => clearInterval(t);
-  }, [circleId, userId, wsConnected, fetchRoomState]);
-
-  /* ── Local clock tick (250ms) ── */
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(t);
-  }, []);
-
   /* ── Synchronized Timing Calculations ── */
   const phase = roomState?.phase || "idle";
   const lobby = roomState?.lobby || null;
   const scheduled = roomState?.scheduled || null;
   const round = roomState?.round || null;
+
+  /* ── HTTP fallback polling (relaxed while WebSockets are live) ── */
+  useEffect(() => {
+    if (!circleId || !userId) return;
+    const intervalMs = wsConnected ? 30000 : 2500;
+    const t = setInterval(fetchRoomState, intervalMs);
+    return () => clearInterval(t);
+  }, [circleId, userId, wsConnected, fetchRoomState]);
+
+  /* ── High-efficiency clock tick (1000ms, only when timer active) ── */
+  useEffect(() => {
+    const isCounting = phase === "running" || phase === "scheduled";
+    if (!isCounting) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [phase]);
 
   const startLocal = round ? round.startAt + clockOffset : 0;
   const endLocal = round ? round.endsAt + clockOffset : 0;

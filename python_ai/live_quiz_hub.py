@@ -22,6 +22,7 @@ import asyncio
 import threading
 import urllib.request
 import urllib.parse
+import re as _re
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
@@ -48,6 +49,21 @@ def _now_ms() -> int:
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _sanitize_str(val: Optional[str], max_len: int = 100) -> str:
+    """Strips dangerous HTML/script injection tags, embedded script content, and enforces length bounds."""
+    if not val:
+        return ""
+    # Completely remove executable script and iframe blocks and their contents
+    s = _re.sub(r"<(script|iframe|style|object|embed)[^>]*?>.*?</\1>", "", str(val), flags=_re.IGNORECASE | _re.DOTALL)
+    # Strip all remaining HTML tags
+    s = _re.sub(r"<[^>]*?>", "", s)
+    # Strip inline javascript: directives
+    s = _re.sub(r"javascript:\s*", "", s, flags=_re.IGNORECASE)
+    # Keep only printable and standard whitespace characters
+    s = "".join(c for c in s if c.isprintable() or c in ("\n", "\r", "\t"))
+    return s.strip()[:max_len]
 
 
 # ───────────────────────── Supabase Global Leaderboard XP Sync ─────────────────────────
@@ -707,10 +723,16 @@ async def preview_group_invite(invite_code: str):
 
 @router.post("/api/study-groups/create")
 async def create_study_group(req: CreateGroupRequest):
-    name = req.name.strip()
-    code_prefix = "".join(ch for ch in req.course_code.upper() if ch.isalnum())[:10] or "QUIZ"
+    name = _sanitize_str(req.name, 80)
     if not name:
         raise HTTPException(status_code=400, detail="Group name is required.")
+
+    course_code = _sanitize_str(req.course_code.upper(), 15)
+    code_prefix = "".join(ch for ch in course_code if ch.isalnum())[:10] or "QUIZ"
+    institution = _sanitize_str(req.institution, 100)
+    description = _sanitize_str(req.description, 300) or "Live synchronized quiz study group."
+    display_name = _sanitize_str(req.display_name, 40) or "Group Admin"
+    user_id = _sanitize_str(req.user_id, 64)
 
     invite_code = f"{code_prefix}-{random.randint(1000, 9999)}"
     while STORE.find_by_code(invite_code) is not None:
@@ -721,20 +743,20 @@ async def create_study_group(req: CreateGroupRequest):
     group = {
         "id": circle_id,
         "name": name,
-        "course_code": req.course_code.strip().upper() or code_prefix,
-        "institution": (req.institution or "").strip(),
-        "description": (req.description or "").strip() or "Live synchronized quiz study group.",
+        "course_code": course_code or code_prefix,
+        "institution": institution,
+        "description": description,
         "invite_code": invite_code,
-        "created_by": req.user_id,
+        "created_by": user_id,
         "created_at": now,
         "members": [
             {
                 "id": f"mem_{uuid.uuid4().hex[:8]}",
                 "circle_id": circle_id,
-                "user_id": req.user_id,
+                "user_id": user_id,
                 "role": "owner",
-                "display_name": req.display_name.strip() or "Group Admin",
-                "user_email": req.user_email or "",
+                "display_name": display_name,
+                "user_email": _sanitize_str(req.user_email or "", 80),
                 "joined_at": now,
             }
         ],
@@ -749,7 +771,11 @@ async def create_study_group(req: CreateGroupRequest):
 @router.post("/api/study-groups/join")
 async def join_study_group(req: JoinGroupRequest):
     ensure_scheduled_timers_started()
-    group = STORE.find_by_code(req.invite_code)
+    clean_code = _sanitize_str(req.invite_code.upper(), 20)
+    display_name = _sanitize_str(req.display_name, 40) or "Member"
+    user_id = _sanitize_str(req.user_id, 64)
+
+    group = STORE.find_by_code(clean_code)
     if not group:
         raise HTTPException(
             status_code=404,
@@ -757,10 +783,10 @@ async def join_study_group(req: JoinGroupRequest):
         )
 
     members = group.setdefault("members", [])
-    existing = next((m for m in members if m.get("user_id") == req.user_id), None)
+    existing = next((m for m in members if m.get("user_id") == user_id), None)
     if existing:
-        if req.display_name.strip():
-            existing["display_name"] = req.display_name.strip()
+        if display_name:
+            existing["display_name"] = display_name
         STORE.save_async()
         return {"success": True, "group": STORE._summary(group), "members": members, "already_member": True}
 
@@ -773,19 +799,19 @@ async def join_study_group(req: JoinGroupRequest):
     members.append({
         "id": f"mem_{uuid.uuid4().hex[:8]}",
         "circle_id": group["id"],
-        "user_id": req.user_id,
+        "user_id": user_id,
         "role": "member",
-        "display_name": req.display_name.strip() or "Member",
-        "user_email": req.user_email or "",
+        "display_name": display_name,
+        "user_email": _sanitize_str(req.user_email or "", 80),
         "joined_at": _now_iso(),
     })
     STORE.save_async()
 
     # If a quiz is actively running right now, register the joining student so they get marked on completion
     room = _get_or_create_room(group["id"])
-    if room["phase"] == "running" and req.user_id not in room["submissions"]:
-        room["submissions"][req.user_id] = {
-            "name": req.display_name.strip() or "Member",
+    if room["phase"] == "running" and user_id not in room["submissions"]:
+        room["submissions"][user_id] = {
+            "name": display_name,
             "answers": {},
             "submitted": False,
             "submitted_at": None,
@@ -914,20 +940,28 @@ async def open_live_quiz_lobby(circle_id: str, req: OpenLobbyRequest):
             t.cancel()
 
     public_qs = [
-        {"question": q.question, "options": q.options, "sourceRef": q.sourceRef or ""}
+        {
+            "question": _sanitize_str(q.question, 400),
+            "options": [_sanitize_str(opt, 200) for opt in q.options],
+            "sourceRef": _sanitize_str(q.sourceRef or "", 80),
+        }
         for q in req.questions
     ]
     secret_key = [
-        {"correct": int(q.correct), "explanation": q.explanation or "", "sourceRef": q.sourceRef or ""}
+        {
+            "correct": int(q.correct),
+            "explanation": _sanitize_str(q.explanation or "", 400),
+            "sourceRef": _sanitize_str(q.sourceRef or "", 80),
+        }
         for q in req.questions
     ]
 
     room = _get_or_create_room(circle_id)
     room["phase"] = "lobby"
     room["lobby"] = {
-        "hostId": req.user_id,
-        "hostName": req.host_name.strip() or "Admin",
-        "title": req.title.strip() or "Live Session Quiz",
+        "hostId": _sanitize_str(req.user_id, 64),
+        "hostName": _sanitize_str(req.host_name, 40) or "Admin",
+        "title": _sanitize_str(req.title, 120) or "Live Session Quiz",
         "count": len(public_qs),
         "durationSec": duration_sec,
         "publicQuestions": public_qs,
@@ -968,16 +1002,24 @@ async def schedule_live_quiz(circle_id: str, req: ScheduleQuizRequest):
             t.cancel()
 
     public_qs = [
-        {"question": q.question, "options": q.options, "sourceRef": q.sourceRef or ""}
+        {
+            "question": _sanitize_str(q.question, 400),
+            "options": [_sanitize_str(opt, 200) for opt in q.options],
+            "sourceRef": _sanitize_str(q.sourceRef or "", 80),
+        }
         for q in req.questions
     ]
     secret_key = [
-        {"correct": int(q.correct), "explanation": q.explanation or "", "sourceRef": q.sourceRef or ""}
+        {
+            "correct": int(q.correct),
+            "explanation": _sanitize_str(q.explanation or "", 400),
+            "sourceRef": _sanitize_str(q.sourceRef or "", 80),
+        }
         for q in req.questions
     ]
     sched_id = f"sch_{uuid.uuid4().hex[:10]}"
-    host_name = req.host_name.strip() or "Admin"
-    title = req.title.strip() or "Scheduled Class Quiz"
+    host_name = _sanitize_str(req.host_name, 40) or "Admin"
+    title = _sanitize_str(req.title, 120) or "Scheduled Class Quiz"
 
     room = _get_or_create_room(circle_id)
     room["phase"] = "scheduled"
@@ -1129,18 +1171,35 @@ async def live_quiz_websocket(
     user_id: str = Query(...),
     name: str = Query("Participant"),
 ):
+    if not STORE.get(circle_id):
+        await websocket.close(code=4004, reason="Study group not found.")
+        return
+
     await websocket.accept()
     ensure_scheduled_timers_started()
+
+    clean_uid = _sanitize_str(user_id, 64)
+    clean_name = _sanitize_str(name, 40) or "Participant"
+
     circle_conns = WS_CONNECTIONS.setdefault(circle_id, {})
-    user_entries = circle_conns.setdefault(user_id, [])
-    entry = {"ws": websocket, "name": name}
+    user_entries = circle_conns.setdefault(clean_uid, [])
+
+    # Anti-socket flood: cap concurrent sockets per user to 4
+    if len(user_entries) >= 4:
+        old = user_entries.pop(0)
+        try:
+            await old["ws"].close(code=1000, reason="Replaced by new connection")
+        except Exception:
+            pass
+
+    entry = {"ws": websocket, "name": clean_name}
     user_entries.append(entry)
 
     # Register late-joining connected students in active running round so time-expiry auto-marks them too
     room = _get_or_create_room(circle_id)
-    if room["phase"] == "running" and user_id not in room["submissions"]:
-        room["submissions"][user_id] = {
-            "name": name or "Participant",
+    if room["phase"] == "running" and clean_uid not in room["submissions"]:
+        room["submissions"][clean_uid] = {
+            "name": clean_name,
             "answers": {},
             "submitted": False,
             "submitted_at": None,
@@ -1151,6 +1210,8 @@ async def live_quiz_websocket(
     try:
         while True:
             msg = await websocket.receive_text()
+            if len(msg) > 16384:  # Drop malicious / oversized message frames (>16 KB)
+                continue
             try:
                 data = json.loads(msg)
                 if data.get("type") == "ping":
@@ -1162,9 +1223,9 @@ async def live_quiz_websocket(
     except Exception:
         pass
     finally:
-        lst = circle_conns.get(user_id, [])
+        lst = circle_conns.get(clean_uid, [])
         if entry in lst:
             lst.remove(entry)
         if not lst:
-            circle_conns.pop(user_id, None)
+            circle_conns.pop(clean_uid, None)
         _schedule_debounced_broadcast(circle_id, delay_sec=0.15)

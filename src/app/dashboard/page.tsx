@@ -80,6 +80,7 @@ import EducationalVideoCuration from "@/components/EducationalVideoCuration";
 import { StudyRoutinesWorkspace } from "@/components/StudyRoutinesWorkspace";
 import ExamTrackerWorkspace from "@/components/ExamTrackerWorkspace";
 import ClassCirclesWorkspace from "@/components/ClassCirclesWorkspace";
+import { DashboardStudyTimerBadge } from "@/components/DashboardStudyTimerBadge";
 import SettingsModal from "@/components/SettingsModal";
 import ExplainThreeWaysModal from "@/components/ExplainThreeWaysModal";
 import ActiveRecallCoachModal from "@/components/ActiveRecallCoachModal";
@@ -201,7 +202,6 @@ export default function StudentDashboardPage() {
   const [currentTheme, setCurrentTheme] = useState<"light" | "dark">("light");
   const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(null);
   const [showNotifBanner, setShowNotifBanner] = useState(false);
-  const [websiteStudySeconds, setWebsiteStudySeconds] = useState(0);
   const [pwaPromptEvent, setPwaPromptEvent] = useState<any>(null);
   const [canInstallPwa, setCanInstallPwa] = useState(false);
 
@@ -346,7 +346,6 @@ export default function StudentDashboardPage() {
   const [quizTimerActive, setQuizTimerActive] = useState(false);
   const [quizTimeSpentSeconds, setQuizTimeSpentSeconds] = useState(0);
   const [quizTimeExpired, setQuizTimeExpired] = useState(false);
-  const [sessionStudySeconds, setSessionStudySeconds] = useState(0);
 
   const formatTime = (totalSeconds: number) => {
     const m = Math.floor(totalSeconds / 60);
@@ -805,99 +804,13 @@ export default function StudentDashboardPage() {
     };
   }, [quizTimerActive, quizSubmitted, quizTimeLeft, isWindowFocused]);
 
-  // Active Session Learning Time Tracker Effect (Fair: stops counting if window is minimized or blurred)
-  useEffect(() => {
-    let interval: any = null;
-    if (activeSession && isWindowFocused) {
-      interval = setInterval(() => {
-        setSessionStudySeconds((prev) => prev + 1);
-      }, 1000);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [activeSession, isWindowFocused]);
-
-  // ─── Website-Wide Foreground Study Time Tracker (Modern Web Guidance: calculate-total-foreground-time) ───
-  // MANDATORY: You must query the visibility-state performance entries to calculate the true foreground time.
-  // Because performance.getEntriesByType('visibility-state') returns an empty array in unsupported browsers,
-  // feature detection is built into the calculation flow.
-  useEffect(() => {
-    if (!user?.id) return;
-
-    const carryKey = `lamla_study_carry_sec_${user.id}`;
-    let carrySec = 0;
-    try {
-      const saved = localStorage.getItem(carryKey);
-      if (saved) carrySec = parseInt(saved, 10) || 0;
-    } catch {}
-
-    const totalMinutesLogged = profile?.total_study_minutes || 0;
-    setWebsiteStudySeconds(totalMinutesLogged * 60 + (carrySec % 60));
-
-    let lastTick = performance.now();
-    let accumulatedSec = carrySec % 60;
-
-    const interval = setInterval(() => {
-      if (document.visibilityState !== "visible") {
-        lastTick = performance.now();
-        return;
-      }
-
-      // Query visibility-state performance entries per Modern Web Guidance
-      const entries = performance.getEntriesByType("visibility-state");
-      let deltaMs = 0;
-      if (entries.length > 0) {
-        // Supported browsers (Chrome 115+, Edge 115+)
-        const lastEntry = entries[entries.length - 1];
-        if (lastEntry.name === "visible") {
-          const nowPerf = performance.now();
-          deltaMs = nowPerf - Math.max(lastTick, lastEntry.startTime);
-          lastTick = nowPerf;
-        } else {
-          lastTick = performance.now();
-          return;
-        }
-      } else {
-        // Fallback for Firefox and Safari
-        const nowPerf = performance.now();
-        deltaMs = nowPerf - lastTick;
-        lastTick = nowPerf;
-      }
-
-      if (deltaMs >= 950) {
-        accumulatedSec += 1;
-        try {
-          localStorage.setItem(carryKey, String(accumulatedSec));
-        } catch {}
-
-        setWebsiteStudySeconds((prev) => prev + 1);
-
-        if (accumulatedSec >= 60) {
-          accumulatedSec = 0;
-          try {
-            localStorage.setItem(carryKey, "0");
-          } catch {}
-          updateStudyStats(1, 0);
-        }
-      }
-    }, 1000);
-
-    const handleVisibilityFlush = () => {
-      try {
-        localStorage.setItem(carryKey, String(accumulatedSec));
-      } catch {}
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityFlush);
-    window.addEventListener("pagehide", handleVisibilityFlush);
-
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", handleVisibilityFlush);
-      window.removeEventListener("pagehide", handleVisibilityFlush);
-    };
-  }, [user?.id, profile?.total_study_minutes]);
+  // High-performance study time logger callback (isolated from top-level tick re-renders)
+  const handleMinuteCompleted = React.useCallback(
+    (minutes: number) => {
+      updateStudyStats(minutes, 0);
+    },
+    [profile, user, isConfigured]
+  );
 
   const handleSignOut = async () => {
     if (isConfigured) {
@@ -910,10 +823,10 @@ export default function StudentDashboardPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate size (up to 1 GB)
-    const MAX_SIZE = 1024 * 1024 * 1024;
+    // Validate size (safe limit up to 60 MB for slide decks & PDFs)
+    const MAX_SIZE = 60 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
-      setModalError("File size exceeds 1 GB limit. Please select a file under 1 GB.");
+      setModalError("File size exceeds 60 MB limit. Please select a file under 60 MB.");
       return;
     }
 
@@ -1937,19 +1850,14 @@ export default function StudentDashboardPage() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* Website-Wide Foreground Study Time Tracker (pauses when minimized/blurred, resumes when active) */}
-            <div
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border ${
-                isWindowFocused
-                  ? "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300"
-                  : "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-400"
-              }`}
-              title={isWindowFocused ? "Active foreground study time" : "Study timer paused while tab or window is inactive"}
-            >
-              <Timer className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              <span className="font-mono">{formatTime(activeSession ? sessionStudySeconds : websiteStudySeconds)}</span>
-              {!isWindowFocused && <span className="hidden sm:inline">(Paused)</span>}
-            </div>
+            {/* Website-Wide Foreground Study Time Tracker (isolated, zero lag) */}
+            <DashboardStudyTimerBadge
+              activeSessionId={activeSession?.id}
+              userId={user?.id}
+              isWindowFocused={isWindowFocused}
+              totalStudyMinutes={profile?.total_study_minutes || 0}
+              onMinuteCompleted={handleMinuteCompleted}
+            />
 
             {!activeSession && (
               <button

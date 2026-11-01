@@ -30,8 +30,8 @@ export async function POST(req: NextRequest) {
     if (!file) {
       return NextResponse.json({ error: "Please choose a slide or document to upload." }, { status: 400 });
     }
-    if (file.size > 1024 * 1024 * 1024) {
-      return NextResponse.json({ error: "File is larger than 1 GB. Please upload a file under 1 GB." }, { status: 400 });
+    if (file.size > 60 * 1024 * 1024) {
+      return NextResponse.json({ error: "File size exceeds the 60 MB maximum limit. Please upload files under 60 MB." }, { status: 400 });
     }
 
     const name = file.name;

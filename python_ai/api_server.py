@@ -9,10 +9,12 @@ and configurable AI Provider selection (Local Only, Free Configured, Hybrid, Hos
 
 import os
 import json
+import time
 import asyncio
 import hashlib
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -54,14 +56,129 @@ app = FastAPI(
     version="1.1.0"
 )
 
-# Enable CORS for Next.js web application
+# Enable hardened CORS for Next.js web application and secure origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|.*\.onrender\.com|.*\.hf\.space|.*\.koyeb\.app)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# In-Memory Anti-DDoS Sliding Window Rate Limiter & OWASP Security Headers
+# ─────────────────────────────────────────────────────────────────────────────
+import threading
+
+class RateLimiter:
+    _history: dict[str, list[float]] = {}
+    _lock = threading.Lock()
+    _last_clean: float = 0.0
+
+    def _cleanup_old(self, now: float):
+        if now - self._last_clean < 30.0:
+            return
+        self._last_clean = now
+        cutoff = now - 60.0
+        stale_keys = [k for k, timestamps in self._history.items() if not any(t > cutoff for t in timestamps)]
+        for k in stale_keys:
+            self._history.pop(k, None)
+
+    def is_allowed(self, ip: str, path: str) -> tuple[bool, int]:
+        with self._lock:
+            now = time.monotonic()
+            self._cleanup_old(now)
+            cutoff = now - 60.0
+
+            if any(path.startswith(p) for p in ("/api/ai", "/api/upload-and-parse", "/api/documents/process", "/api/documents/extract")):
+                limit = 35  # 35 heavy requests per minute
+            elif any(path.startswith(p) for p in ("/api/auth", "/auth/login", "/auth/signup")):
+                limit = 20  # 20 auth attempts per minute to stop credential stuffing
+            elif path.startswith("/api/study-groups"):
+                limit = 30  # 30 group operations per minute
+            else:
+                limit = 200  # 200 general page / API requests per minute
+
+            key = f"{ip}:{limit}"
+            timestamps = [t for t in self._history.get(key, []) if t > cutoff]
+
+            if len(timestamps) >= limit:
+                return False, 60
+
+            timestamps.append(now)
+            self._history[key] = timestamps
+            return True, 0
+
+
+RATE_LIMITER = RateLimiter()
+STATIC_EXTS = (".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf")
+STATIC_PREFIXES = ("/_next/static/", "/icons/", "/feature_showcase_", "/status_cards_")
+
+
+def _get_client_ip(request: Request) -> str:
+    for h in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+        val = request.headers.get(h)
+        if val:
+            return val.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), browsing-topics=()",
+    "X-XSS-Protection": "1; mode=block",
+    "X-Permitted-Cross-Domain-Policies": "none",
+    "Content-Security-Policy": (
+        "default-src 'self' https: data: blob:; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: blob:; "
+        "style-src 'self' 'unsafe-inline' https:; "
+        "img-src 'self' data: blob: https:; "
+        "connect-src 'self' https: wss: ws: http://127.0.0.1:* http://localhost:*; "
+        "font-src 'self' data: https:; "
+        "frame-ancestors 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self';"
+    ),
+}
+
+@app.middleware("http")
+async def security_and_rate_limit_middleware(request: Request, call_next):
+    raw_path = request.url.path
+    is_static = any(raw_path.startswith(p) for p in STATIC_PREFIXES) or raw_path.endswith(STATIC_EXTS)
+
+    if not is_static and raw_path not in ("/health", "/api/health"):
+        ip = _get_client_ip(request)
+        allowed, retry_after = RATE_LIMITER.is_allowed(ip, raw_path)
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Rate limit exceeded. Please wait a moment before sending more requests.",
+                    "code": "RATE_LIMIT_EXCEEDED",
+                    "retry_after_seconds": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    response = await call_next(request)
+
+    for k, v in SECURITY_HEADERS.items():
+        response.headers[k] = v
+
+    if "server" in response.headers:
+        del response.headers["server"]
+    if "x-powered-by" in response.headers:
+        del response.headers["x-powered-by"]
+
+    if is_static:
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif raw_path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+
+    return response
 
 processor = DocumentProcessor()
 ai_engine = PythonAIEngine()
@@ -204,33 +321,52 @@ async def upload_and_parse(file: UploadFile = File(...)):
     import uuid
     import re as _re
 
-    filename = file.filename or "uploaded_file"
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60 MB safe maximum for slide decks & PDFs
+    ALLOWED_EXTS = {"pptx", "pdf", "docx", "doc", "txt", "md", "jpg", "jpeg", "png", "webp"}
+
+    raw_filename = file.filename or "uploaded_file"
+    # Prevent path traversal attacks (e.g. ../ or absolute paths)
+    clean_filename = os.path.basename(raw_filename).replace("..", "").strip() or "uploaded_file"
+    ext = clean_filename.rsplit(".", 1)[-1].lower() if "." in clean_filename else ""
+
+    if ext not in ALLOWED_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format .{ext}. Allowed formats: {', '.join(sorted(ALLOWED_EXTS))}",
+        )
+
     safe_suffix = f".{ext}" if ext.isalnum() and len(ext) <= 8 else ".tmp"
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, f"lamla_up_{uuid.uuid4().hex}{safe_suffix}")
 
     try:
         file_hasher = hashlib.sha256()
+        total_read = 0
         with open(temp_path, "wb") as buffer:
             while True:
-                chunk = await file.read(1024 * 1024)
+                chunk = await file.read(64 * 1024)  # Stream in 64 KB blocks for memory efficiency
                 if not chunk:
                     break
+                total_read += len(chunk)
+                if total_read > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="File exceeds the maximum safe upload limit of 60 MB. Please upload standard slide decks or PDFs under 60 MB.",
+                    )
                 buffer.write(chunk)
                 file_hasher.update(chunk)
 
-        file_size = os.path.getsize(temp_path)
+        file_size = total_read
         doc_hash = f"doc_extracted_{file_hasher.hexdigest()}"
 
         # Rapid SHA-256 deduplication across millions of uploads
         if doc_hash in _PARSE_CACHE:
             cached_data = dict(_PARSE_CACHE[doc_hash])
-            cached_data["title"] = filename
+            cached_data["title"] = clean_filename
             cached_data["file_size_bytes"] = file_size
             schedule_background_enrichment(
                 cached_data.get("full_text", ""),
-                filename,
+                clean_filename,
                 cached_data.get("key_concepts"),
             )
             return {"success": True, "data": cached_data, "deduplicated": True}
@@ -245,22 +381,22 @@ async def upload_and_parse(file: UploadFile = File(...)):
         elif ext in ["txt", "md"]:
             with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
                 text_content = f.read()
-            result = await asyncio.to_thread(processor.process_text, text_content, filename)
+            result = await asyncio.to_thread(processor.process_text, text_content, clean_filename)
         elif ext in ["jpg", "jpeg", "png", "webp"]:
-            result = await asyncio.to_thread(processor.process_image, temp_path, filename)
+            result = await asyncio.to_thread(processor.process_image, temp_path, clean_filename)
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported format .{ext}. Supported formats: .pptx, .pdf, .docx, .txt, .md, images"
+                detail=f"Unsupported format .{ext}. Supported formats: {', '.join(sorted(ALLOWED_EXTS))}"
             )
 
-        result["title"] = filename
+        result["title"] = clean_filename
         result["file_size_bytes"] = file_size
 
         # Store compact representation in bounded parse cache (avoid holding huge duplicate page arrays in RAM)
         compact_cached = {
             "document_type": result.get("document_type"),
-            "title": filename,
+            "title": clean_filename,
             "total_slides": result.get("total_slides") or result.get("total_pages") or result.get("total_sections") or 1,
             "total_pages": result.get("total_pages") or result.get("total_slides") or 1,
             "full_text": result.get("full_text", ""),
@@ -275,7 +411,7 @@ async def upload_and_parse(file: UploadFile = File(...)):
         # Trigger automatic internet research & visual diagram enrichment in background!
         schedule_background_enrichment(
             result.get("full_text", ""),
-            filename,
+            clean_filename,
             result.get("key_concepts"),
         )
 
