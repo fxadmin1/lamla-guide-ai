@@ -4,14 +4,15 @@ import { extractTextFromImageWithAI } from "@/lib/gemini";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
-const PYTHON_API_URL = process.env.PYTHON_AI_URL || "http://127.0.0.1:8000";
+const getPythonApiUrl = () => process.env.PYTHON_AI_URL || `http://127.0.0.1:${process.env.PORT || "7860"}`;
 
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 // Lightweight text extraction for group activities (e.g. live quizzes).
 // Unlike /api/documents/process, this does NOT create a study session or use the student's session quota.
 export async function POST(req: NextRequest) {
   try {
+    const PYTHON_API_URL = getPythonApiUrl();
     const token = req.headers.get("authorization")?.replace("Bearer ", "");
     if (!token) {
       return NextResponse.json({ error: "Unauthorized: Missing authentication token." }, { status: 401 });
@@ -30,8 +31,8 @@ export async function POST(req: NextRequest) {
     if (!file) {
       return NextResponse.json({ error: "Please choose a slide or document to upload." }, { status: 400 });
     }
-    if (file.size > 60 * 1024 * 1024) {
-      return NextResponse.json({ error: "File size exceeds the 60 MB maximum limit. Please upload files under 60 MB." }, { status: 400 });
+    if (file.size > 1536 * 1024 * 1024) {
+      return NextResponse.json({ error: "File size exceeds the 1.5 GB maximum limit." }, { status: 400 });
     }
 
     const name = file.name;

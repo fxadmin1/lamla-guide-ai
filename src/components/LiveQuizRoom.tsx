@@ -23,6 +23,7 @@ import {
   Award,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { tryFastClientExtraction } from "@/lib/fastClientExtractor";
 
 /* ───────────────────────── Types ───────────────────────── */
 
@@ -467,23 +468,31 @@ export default function LiveQuizRoom({
     setError("");
     setBusy("upload");
     try {
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess.session?.access_token || "";
       let extracted = "";
       let derivedTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
 
-      if (token) {
-        const fd = new FormData();
-        fd.append("file", file);
-        const res = await fetch("/api/documents/extract", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: fd,
-        });
-        const json = await res.json();
-        if (res.ok && json.text) {
-          extracted = json.text;
-          derivedTitle = json.title || derivedTitle;
+      // 1. Try instant zero-RAM browser extraction first (.pptx, .docx, .txt, .md up to 1.5 GB)
+      const fastClient = await tryFastClientExtraction(file);
+      if (fastClient?.handledOnClient && fastClient.extractedText) {
+        extracted = fastClient.extractedText;
+      }
+
+      if (!extracted) {
+        const { data: sess } = await supabase.auth.getSession();
+        const token = sess.session?.access_token || "";
+        if (token) {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await fetch("/api/documents/extract", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+            body: fd,
+          });
+          const json = await res.json();
+          if (res.ok && json.text) {
+            extracted = json.text;
+            derivedTitle = json.title || derivedTitle;
+          }
         }
       }
 

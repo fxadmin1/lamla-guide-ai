@@ -82,6 +82,7 @@ class PythonAIEngine:
         self._preferred_gemini_model: Optional[str] = None
         self._dead_gemini_models: set = set()
         self._key_cooldown_until: Dict[str, float] = {}
+        self._free_cloud_cooldown_until: float = 0.0
         self._ollama_status: Tuple[float, bool] = (0.0, False)
         self.active_model_name = self.local_model if self.mode == "local_only" else self.hosted_models[0]
         self._cache: Dict[str, Any] = {}
@@ -212,7 +213,7 @@ class PythonAIEngine:
         for attempt in range(num_keys):
             idx = (self.current_key_idx + attempt) % num_keys
             active_key = self.api_keys[idx]
-            if self._key_cooldown_until.get(active_key, 0.0) > now and num_keys > 1:
+            if self._key_cooldown_until.get(active_key, 0.0) > now:
                 continue
 
             for model in models_order:
@@ -230,7 +231,7 @@ class PythonAIEngine:
                 req = urllib.request.Request(endpoint, data=data, headers={"Content-Type": "application/json"})
 
                 try:
-                    with urllib.request.urlopen(req, timeout=28) as response:
+                    with urllib.request.urlopen(req, timeout=8) as response:
                         result = json.loads(response.read().decode("utf-8"))
                         text = result["candidates"][0]["content"]["parts"][0]["text"]
                         self._preferred_gemini_model = model
@@ -241,16 +242,22 @@ class PythonAIEngine:
                     if e.code == 404:
                         self._dead_gemini_models.add(model)
                         continue
-                    if e.code in (429, 403):
-                        self._key_cooldown_until[active_key] = time.time() + 45.0
-                        last_error = RuntimeError(f"Gemini quota/rate limit ({e.code}) on {model}")
+                    if e.code in (400, 401, 403):
+                        # Key is invalid, restricted, or expired — cooldown for 15 minutes and break immediately
+                        self._key_cooldown_until[active_key] = time.time() + 900.0
+                        last_error = RuntimeError(f"Gemini key unavailable ({e.code}) on {model}")
+                        break
+                    if e.code == 429:
+                        self._key_cooldown_until[active_key] = time.time() + 90.0
+                        last_error = RuntimeError(f"Gemini rate limit ({e.code}) on {model}")
                         break
                     err_body = e.read().decode("utf-8", errors="ignore")
                     last_error = RuntimeError(f"Model {model} HTTP {e.code}: {err_body[:120]}")
-                    continue
+                    break
                 except Exception as e:
+                    self._key_cooldown_until[active_key] = time.time() + 60.0
                     last_error = e
-                    continue
+                    break
 
         raise last_error or RuntimeError("All configured Gemini keys are currently in cooldown.")
 
@@ -263,52 +270,52 @@ class PythonAIEngine:
     ) -> str:
         """
         Zero-key, zero-credit-exhaustion OpenAI-compatible cloud fallback
-        so millions of users can study concurrently even when API key quotas hit 100%.
+        with strict 4s timeout and cooldown memory so slow endpoints never cause lag.
         """
+        if time.time() < self._free_cloud_cooldown_until:
+            raise RuntimeError("Free cloud fallback in cooldown.")
+
         messages = []
         sys_msg = system_prompt or "You are LAMLA Guide AI, an accurate academic tutor and exam engine."
         if json_mode:
             sys_msg += "\nIMPORTANT: Return ONLY valid JSON without markdown code fences."
         messages.append({"role": "system", "content": sys_msg})
-        messages.append({"role": "user", "content": prompt[:28000]})
+        messages.append({"role": "user", "content": prompt[:18000]})
 
-        for endpoint, model_name in (
-            ("https://text.pollinations.ai/openai", "openai"),
-            ("https://text.pollinations.ai/openai", "mistral"),
-        ):
-            payload: Dict[str, Any] = {
-                "model": model_name,
-                "messages": messages,
-                "temperature": temperature,
-                "seed": random.randint(1, 99999),
-            }
-            if json_mode:
-                payload["response_format"] = {"type": "json_object"}
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                endpoint,
-                data=data,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "LAMLAGuideAI/2.0 (Educational Platform)",
-                },
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=24) as resp:
-                    raw_body = resp.read().decode("utf-8", errors="replace").strip()
-                    if raw_body.startswith("{"):
-                        parsed = json.loads(raw_body)
-                        if isinstance(parsed, dict) and "choices" in parsed:
-                            content = parsed["choices"][0]["message"]["content"]
-                            if content and len(content.strip()) > 2:
-                                self.active_model_name = f"LAMLA Cloud Free ({model_name})"
-                                return content
-                    if raw_body and not json_mode:
-                        self.active_model_name = f"LAMLA Cloud Free ({model_name})"
-                        return raw_body
-            except Exception:
-                continue
+        payload: Dict[str, Any] = {
+            "model": "openai",
+            "messages": messages,
+            "temperature": temperature,
+            "seed": random.randint(1, 99999),
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            "https://text.pollinations.ai/openai",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "LAMLAGuideAI/2.0 (Educational Platform)",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
+                raw_body = resp.read().decode("utf-8", errors="replace").strip()
+                if raw_body.startswith("{"):
+                    parsed = json.loads(raw_body)
+                    if isinstance(parsed, dict) and "choices" in parsed:
+                        content = parsed["choices"][0]["message"]["content"]
+                        if content and len(content.strip()) > 2:
+                            self.active_model_name = "LAMLA Cloud Free (openai)"
+                            return content
+                if raw_body and not json_mode and len(raw_body) > 10:
+                    self.active_model_name = "LAMLA Cloud Free (openai)"
+                    return raw_body
+        except Exception:
+            self._free_cloud_cooldown_until = time.time() + 300.0
 
+        self._free_cloud_cooldown_until = time.time() + 300.0
         raise RuntimeError("Free cloud fallback temporarily unreachable.")
 
     def call_gemini_vision(

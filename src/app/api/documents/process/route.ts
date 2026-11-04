@@ -12,7 +12,7 @@ import {
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-key";
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
-const PYTHON_API_URL = process.env.PYTHON_AI_URL || "http://127.0.0.1:8000";
+const getPythonApiUrl = () => process.env.PYTHON_AI_URL || `http://127.0.0.1:${process.env.PORT || "7860"}`;
 
 const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -97,36 +97,40 @@ export async function POST(req: NextRequest) {
       }, { status: 403 });
     }
 
+    const PYTHON_API_URL = getPythonApiUrl();
     const pastedText = (formData.get("text") as string)?.trim() || "";
+    const clientFileName = (formData.get("fileName") as string)?.trim() || "";
+    const clientFileSize = Number(formData.get("fileSize") || 0);
+    const clientPageCount = Number(formData.get("pageCount") || 0);
 
     if (!file && !pastedText) {
       return NextResponse.json({ 
-        error: "Please upload a study material file (PDF, PowerPoint, Word, Image up to 1GB) or paste your lecture notes." 
+        error: "Please upload a study material file (PDF, PowerPoint, Word, Image up to 1.5 GB) or paste your lecture notes." 
       }, { status: 400 });
     }
 
-    // Safe file upload limit (up to 60 MB for slide decks & PDFs)
+    // Safe file upload limit (up to 1.5 GB for large lecture slide decks & PDFs)
     if (file) {
-      const maxBytes = 60 * 1024 * 1024; // 60 MB
+      const maxBytes = 1536 * 1024 * 1024; // 1.5 GB
       if (file.size > maxBytes) {
         return NextResponse.json({
-          error: "File size exceeds the 60 MB maximum limit. Please upload files under 60 MB.",
+          error: "File size exceeds the 1.5 GB maximum limit. Please upload files under 1.5 GB.",
           code: "FILE_TOO_LARGE",
         }, { status: 400 });
       }
     }
 
-    const filename = file ? file.name : "Study Notes";
-    const fileSize = file ? file.size : Buffer.byteLength(pastedText, "utf-8");
-    const finalTitle = sessionTitle || (file ? filename.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ") : "Lecture Study Session");
+    const filename = file ? file.name : (clientFileName || "Study Notes");
+    const fileSize = file ? file.size : (clientFileSize || Buffer.byteLength(pastedText, "utf-8"));
+    const finalTitle = sessionTitle || ((file || clientFileName) ? filename.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ") : "Lecture Study Session");
 
     let extractedText = pastedText;
-    let pageCount = 1;
+    let pageCount = clientPageCount > 0 ? clientPageCount : 1;
     let structuredData: any = {};
-    let parsedViaPython = false;
+    let parsedViaPython = Boolean(pastedText && !file);
 
-    // 3. If file provided, forward file to Python AI streaming service on port 8000
-    if (file) {
+    // 3. If file provided and not already extracted on client, forward file to Python AI streaming service
+    if (file && !extractedText) {
       try {
         const pythonFormData = new FormData();
         pythonFormData.append("file", file, filename);

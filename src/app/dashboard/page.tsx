@@ -65,13 +65,16 @@ import {
   Home,
   Download,
   Tv,
-  Bell
+  Bell,
+  QrCode,
+  X
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { APP_CONFIG } from "@/lib/constants";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { parseDocumentSlides, SlideSegment } from "@/lib/utils";
+import { tryFastClientExtraction } from "@/lib/fastClientExtractor";
 import { useAudioPlayer } from "@/contexts/AudioPlayerContext";
 import { useSpeechRecognition } from "@/lib/useSpeechRecognition";
 import StudyContentRenderer from "@/components/StudyContentRenderer";
@@ -204,6 +207,7 @@ export default function StudentDashboardPage() {
   const [showNotifBanner, setShowNotifBanner] = useState(false);
   const [pwaPromptEvent, setPwaPromptEvent] = useState<any>(null);
   const [canInstallPwa, setCanInstallPwa] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -633,19 +637,53 @@ export default function StudentDashboardPage() {
       if (session?.user) {
         setUser(session.user);
 
-        // Fetch user profile
-        const { data: profileData } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", session.user.id)
-          .single();
+        // Fetch all workspace data in parallel (< 0.3s mobile roundtrip instead of 9 sequential queries)
+        const [
+          { data: profileData },
+          { data: docs },
+          { data: sums },
+          { data: notes },
+          { data: decks },
+          { data: cards },
+          { data: qz },
+          { data: attempts },
+          { data: lb },
+        ] = await Promise.all([
+          supabase.from("profiles").select("*").eq("id", session.user.id).single(),
+          supabase
+            .from("documents")
+            .select("*")
+            .eq("user_id", session.user.id)
+            .order("created_at", { ascending: false }),
+          supabase.from("summaries").select("*").eq("user_id", session.user.id),
+          supabase.from("study_notes").select("*").eq("user_id", session.user.id),
+          supabase.from("flashcard_decks").select("*").eq("user_id", session.user.id),
+          supabase
+            .from("flashcards")
+            .select("*, flashcard_decks!inner(document_id, user_id)")
+            .eq("flashcard_decks.user_id", session.user.id),
+          supabase
+            .from("quizzes")
+            .select("*, quiz_questions(*)")
+            .eq("user_id", session.user.id)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("quiz_attempts")
+            .select("*")
+            .eq("user_id", session.user.id)
+            .order("completed_at", { ascending: false }),
+          supabase
+            .from("profiles")
+            .select("id, full_name, email, educational_level, streak_days, total_study_minutes, points")
+            .order("points", { ascending: false })
+            .limit(200),
+        ]);
 
         if (profileData) {
           const now = new Date();
           const lastActive = profileData.updated_at ? new Date(profileData.updated_at) : null;
           let currentStreak = profileData.streak_days || 0;
 
-          // If more than 1 day passed without any active study activity, streak resets to 0
           if (lastActive && currentStreak > 0) {
             const diffDays = Math.floor((now.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24));
             if (diffDays > 1) {
@@ -668,63 +706,13 @@ export default function StudentDashboardPage() {
           });
         }
 
-        // Fetch all independent study sessions (stored in documents)
-        const { data: docs } = await supabase
-          .from("documents")
-          .select("*")
-          .eq("user_id", session.user.id)
-          .order("created_at", { ascending: false });
         if (docs) setSessions(docs);
-
-        // Fetch summaries
-        const { data: sums } = await supabase
-          .from("summaries")
-          .select("*")
-          .eq("user_id", session.user.id);
         if (sums) setSummaries(sums);
-
-        // Fetch study notes & explanations
-        const { data: notes } = await supabase
-          .from("study_notes")
-          .select("*")
-          .eq("user_id", session.user.id);
         if (notes) setStudyNotes(notes);
-
-        // Fetch flashcard decks and cards
-        const { data: decks } = await supabase
-          .from("flashcard_decks")
-          .select("*")
-          .eq("user_id", session.user.id);
         if (decks) setFlashcardDecks(decks);
-
-        const { data: cards } = await supabase
-          .from("flashcards")
-          .select("*, flashcard_decks!inner(document_id, user_id)")
-          .eq("flashcard_decks.user_id", session.user.id);
         if (cards) setFlashcards(cards);
-
-        // Fetch quizzes and questions
-        const { data: qz } = await supabase
-          .from("quizzes")
-          .select("*, quiz_questions(*)")
-          .eq("user_id", session.user.id)
-          .order("created_at", { ascending: false });
         if (qz) setQuizzes(qz);
-
-        // Fetch quiz attempts
-        const { data: attempts } = await supabase
-          .from("quiz_attempts")
-          .select("*")
-          .eq("user_id", session.user.id)
-          .order("completed_at", { ascending: false });
         if (attempts) setQuizAttempts(attempts);
-
-        // Fetch student leaderboard rankings for all users
-        const { data: lb } = await supabase
-          .from("profiles")
-          .select("id, full_name, email, educational_level, streak_days, total_study_minutes, points")
-          .order("points", { ascending: false })
-          .limit(200);
         if (lb) setLeaderboardProfiles(lb);
       }
     } catch (err) {
@@ -823,10 +811,10 @@ export default function StudentDashboardPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate size (safe limit up to 60 MB for slide decks & PDFs)
-    const MAX_SIZE = 60 * 1024 * 1024;
+    // Validate size (up to 1.5 GB for large lecture slide decks & PDFs)
+    const MAX_SIZE = 1536 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
-      setModalError("File size exceeds 60 MB limit. Please select a file under 60 MB.");
+      setModalError("File size exceeds 1.5 GB limit. Please select a file under 1.5 GB.");
       return;
     }
 
@@ -841,7 +829,7 @@ export default function StudentDashboardPage() {
 
   // ─────────────────────────────────────────────────────────────
   // 1. CREATE NEW STUDY SESSION (ONE UPLOAD GROUP = ONE SESSION)
-  // Streams files up to 1GB to Python AI core without freezing UI
+  // Extracts PPTX/DOCX/TXT/MD in < 0.3s right on the device or streams up to 1.5 GB
   // ─────────────────────────────────────────────────────────────
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -861,7 +849,7 @@ export default function StudentDashboardPage() {
     }
 
     if (!selectedFile && !materialsText.trim()) {
-      setModalError("Please select a study material file (PDF, PowerPoint, Word, Image up to 1GB) or paste your lecture notes.");
+      setModalError("Please select a study material file (PDF, PowerPoint, Word, Image up to 1.5 GB) or paste your lecture notes.");
       return;
     }
 
@@ -872,7 +860,7 @@ export default function StudentDashboardPage() {
 
     setModalLoading(true);
     setModalError(null);
-    setUploadProgress(0);
+    setUploadProgress(5);
     setProcessingStage("Preparing study session...");
 
     try {
@@ -883,9 +871,68 @@ export default function StudentDashboardPage() {
 
       const formData = new FormData();
       if (selectedFile) {
-        formData.append("file", selectedFile);
-      }
-      if (materialsText.trim()) {
+        setProcessingStage("Instantly reading slides & text on your device...");
+        setUploadProgress(20);
+        const fastRes = await tryFastClientExtraction(selectedFile);
+        if (fastRes?.handledOnClient && fastRes.extractedText) {
+          setUploadProgress(80);
+          setProcessingStage("Generating study resources with AI core...");
+          formData.append("text", fastRes.extractedText);
+          formData.append("fileName", selectedFile.name);
+          formData.append("fileSize", String(selectedFile.size));
+          formData.append("pageCount", String(fastRes.pageCount || 1));
+        } else {
+          // Stream PDF/binary directly to Python disk-streaming endpoint first (supports 1 GB+ without Node RAM buffering)
+          let directExtractedText = "";
+          let directPageCount = 1;
+          try {
+            const directParse: any = await new Promise((resolveDirect, rejectDirect) => {
+              const pyXhr = new XMLHttpRequest();
+              pyXhr.open("POST", "/api/upload-and-parse");
+              pyXhr.upload.onprogress = (ev) => {
+                if (ev.lengthComputable) {
+                  const pct = Math.min(85, Math.round((ev.loaded / ev.total) * 80));
+                  setUploadProgress(pct);
+                  setProcessingStage(`Streaming ${selectedFile.name} (${pct}%)...`);
+                }
+              };
+              pyXhr.onload = () => {
+                try {
+                  const parsed = JSON.parse(pyXhr.responseText);
+                  if (pyXhr.status >= 200 && pyXhr.status < 300 && parsed?.data?.full_text) {
+                    resolveDirect(parsed.data);
+                  } else {
+                    rejectDirect(new Error("Fallback to process route"));
+                  }
+                } catch {
+                  rejectDirect(new Error("Fallback to process route"));
+                }
+              };
+              pyXhr.onerror = () => rejectDirect(new Error("Fallback to process route"));
+              pyXhr.ontimeout = () => rejectDirect(new Error("Fallback to process route"));
+              pyXhr.timeout = 600000;
+              const pyFd = new FormData();
+              pyFd.append("file", selectedFile, selectedFile.name);
+              pyXhr.send(pyFd);
+            });
+            if (directParse?.full_text) {
+              directExtractedText = directParse.full_text;
+              directPageCount = directParse.total_slides || directParse.total_pages || 1;
+            }
+          } catch {}
+
+          if (directExtractedText) {
+            setUploadProgress(90);
+            setProcessingStage("Synthesizing slides, notes & exam questions...");
+            formData.append("text", directExtractedText);
+            formData.append("fileName", selectedFile.name);
+            formData.append("fileSize", String(selectedFile.size));
+            formData.append("pageCount", String(directPageCount));
+          } else {
+            formData.append("file", selectedFile);
+          }
+        }
+      } else if (materialsText.trim()) {
         formData.append("text", materialsText.trim());
       }
       formData.append("title", sessionTitle.trim());
@@ -909,7 +956,7 @@ export default function StudentDashboardPage() {
             if (pct < 100) {
               setProcessingStage(`Uploading study materials (${pct}%)...`);
             } else {
-              setProcessingStage("Uploaded! Extracting all slides, pages & key concepts with Python AI core...");
+              setProcessingStage("Synthesizing slides, notes & exam questions...");
             }
           }
         };
@@ -932,8 +979,8 @@ export default function StudentDashboardPage() {
         };
 
         xhr.onerror = () => reject(new Error("Network connection error during upload. Please check your internet connection."));
-        xhr.ontimeout = () => reject(new Error("Document processing timed out. Please try again or split into smaller units."));
-        xhr.timeout = 300000; // 5 minutes timeout
+        xhr.ontimeout = () => reject(new Error("Upload connection timed out. Please check your internet connection and try again."));
+        xhr.timeout = 600000; // 10 minutes timeout for 1GB+ files
 
         xhr.send(formData);
       });
@@ -1815,63 +1862,92 @@ export default function StudentDashboardPage() {
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Student";
 
   return (
-    <div className="flex-1 bg-white dark:bg-slate-950 pb-20 transition-colors">
+    <div className="flex-1 w-full max-w-[100vw] overflow-x-hidden bg-white dark:bg-slate-950 pb-24 sm:pb-20 transition-colors">
       
       {/* ─────────────────────────────────────────────────────────
-          TOP HEADER - CLEAN WORKSPACE BAR
+          TOP HEADER - MOBILE-FIRST FULL-VIEWPORT WORKSPACE BAR
       ─────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-950/95 backdrop-blur-sm border-b border-slate-200 dark:border-slate-800 transition-colors">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
+          {/* Left: Always-Visible LAMLA Guide Logo & Brand Title */}
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0">
             <button
               type="button"
               onClick={() => {
                 setActiveSession(null);
                 setDashboardScope("home");
               }}
-              className="flex items-center gap-2.5 shrink-0 text-left"
+              className="flex items-center gap-2 shrink-0 text-left"
             >
-              <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white">
+              <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-xs shrink-0">
                 <GraduationCap className="w-4 h-4" />
               </div>
-              <span className="font-bold text-base tracking-tight text-slate-900 dark:text-white">
-                LAMLA Guide
-              </span>
+              <div className="flex flex-col leading-none">
+                <span className="font-bold text-sm sm:text-base tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
+                  LAMLA Guide
+                </span>
+                <span className="text-[10px] font-medium text-blue-600 dark:text-blue-400 whitespace-nowrap">
+                  AI Study Companion
+                </span>
+              </div>
             </button>
 
             {activeSession && (
               <>
-                <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">/</span>
-                <span className="text-sm font-medium text-slate-600 dark:text-slate-300 truncate max-w-[200px] sm:max-w-md hidden sm:inline">
+                <span className="text-slate-300 dark:text-slate-700 hidden md:inline">/</span>
+                <span className="text-sm font-medium text-slate-600 dark:text-slate-300 truncate max-w-[200px] lg:max-w-md hidden md:inline">
                   {activeSession.title}
                 </span>
               </>
             )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Website-Wide Foreground Study Time Tracker (isolated, zero lag) */}
-            <DashboardStudyTimerBadge
-              activeSessionId={activeSession?.id}
-              userId={user?.id}
-              isWindowFocused={isWindowFocused}
-              totalStudyMinutes={profile?.total_study_minutes || 0}
-              onMinuteCompleted={handleMinuteCompleted}
-            />
+          {/* Right: Clean Action Controls (Never Crowds Logo on Phone) */}
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+            {/* Desktop Timer Badge */}
+            <div className="hidden md:block">
+              <DashboardStudyTimerBadge
+                activeSessionId={activeSession?.id}
+                userId={user?.id}
+                isWindowFocused={isWindowFocused}
+                totalStudyMinutes={profile?.total_study_minutes || 0}
+                onMinuteCompleted={handleMinuteCompleted}
+              />
+            </div>
 
             {!activeSession && (
               <button
                 type="button"
                 onClick={() => setShowNewSessionModal(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold transition-colors"
+                className="inline-flex items-center gap-1 px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs"
               >
-                <Plus className="w-4 h-4" />
+                <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 <span className="hidden sm:inline">New session</span>
                 <span className="sm:hidden">New</span>
               </button>
             )}
 
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300">
+            <Link
+              href="/"
+              className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-700 dark:text-slate-300 text-xs font-medium transition-colors"
+              title="View Main Website"
+            >
+              <Home className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+              <span>Main Site</span>
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => setShowQrModal(true)}
+              className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/80 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-colors"
+              title="Show Class QR Code"
+              aria-label="Show Class QR Code"
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">QR Code</span>
+            </button>
+
+            <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300">
               <span className="capitalize">{currentPlan}</span>
               {!isUnlimitedPlan && (
                 <span className="text-slate-400">({sessions.length}/{planLimit})</span>
@@ -1885,7 +1961,7 @@ export default function StudentDashboardPage() {
                   setUpgradeReason(`You are currently on the ${currentPlan} plan (${sessions.length}/${planLimit} sessions used). Upgrade for additional sessions and full flashcards.`);
                   setShowUpgradeModal(true);
                 }}
-                className="px-3 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-colors"
+                className="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-colors"
               >
                 Upgrade
               </button>
@@ -1894,7 +1970,7 @@ export default function StudentDashboardPage() {
             {isAdmin && (
               <Link
                 href="/admin"
-                className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                className="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-700 dark:text-slate-200 text-xs font-semibold items-center gap-1.5 transition-colors"
               >
                 <ShieldCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                 <span className="hidden md:inline">Admin</span>
@@ -1916,18 +1992,18 @@ export default function StudentDashboardPage() {
                     } catch {}
                   }
                 }}
-                className="px-3 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                className="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold items-center gap-1.5 transition-colors shadow-sm"
                 title="Install LAMLA Guide App"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Install App</span>
+                <span className="hidden md:inline">Install App</span>
               </button>
             )}
 
             <button
               type="button"
               onClick={handleToggleTheme}
-              className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
+              className="p-1.5 sm:p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
               title={`Switch to ${currentTheme === "dark" ? "light" : "dark"} mode`}
               aria-label="Toggle color theme"
             >
@@ -1941,7 +2017,7 @@ export default function StudentDashboardPage() {
             <button
               type="button"
               onClick={() => setShowSettingsModal(true)}
-              className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
+              className="p-1.5 sm:p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
               title="Settings"
               aria-label="Open settings"
             >
@@ -1951,12 +2027,84 @@ export default function StudentDashboardPage() {
             <button
               type="button"
               onClick={handleSignOut}
-              className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
+              className="p-1.5 sm:p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
               title="Sign out"
               aria-label="Sign out"
             >
               <LogOut className="w-4 h-4" />
             </button>
+          </div>
+        </div>
+
+        {/* Mobile Secondary Quick-Access Bar (Shows Main Website Link, Timer, Plan, Admin & Install App cleanly on phones) */}
+        <div className="md:hidden border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/80 dark:bg-slate-900/60 px-3 py-1.5 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-200 shrink-0"
+            >
+              <Home className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+              <span>Main Website</span>
+            </Link>
+
+            <DashboardStudyTimerBadge
+              activeSessionId={activeSession?.id}
+              userId={user?.id}
+              isWindowFocused={isWindowFocused}
+              totalStudyMinutes={profile?.total_study_minutes || 0}
+              onMinuteCompleted={handleMinuteCompleted}
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-medium text-slate-600 dark:text-slate-300 capitalize">
+              {currentPlan}{!isUnlimitedPlan ? ` (${sessions.length}/${planLimit})` : ""}
+            </span>
+
+            {!isUnlimitedPlan && (
+              <button
+                type="button"
+                onClick={() => {
+                  setUpgradeReason(`You are currently on the ${currentPlan} plan (${sessions.length}/${planLimit} sessions used). Upgrade for additional sessions and full flashcards.`);
+                  setShowUpgradeModal(true);
+                }}
+                className="px-2 py-0.5 rounded-md bg-blue-600 text-white text-[11px] font-semibold"
+              >
+                Upgrade
+              </button>
+            )}
+
+            {isAdmin && (
+              <Link
+                href="/admin"
+                className="px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/80 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 text-[11px] font-semibold flex items-center gap-1"
+              >
+                <ShieldCheck className="w-3 h-3" />
+                <span>Admin</span>
+              </Link>
+            )}
+
+            {canInstallPwa && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (pwaPromptEvent) {
+                    try {
+                      await pwaPromptEvent.prompt();
+                      const res = await pwaPromptEvent.userChoice;
+                      if (res?.outcome === "accepted") {
+                        setCanInstallPwa(false);
+                        setPwaPromptEvent(null);
+                      }
+                    } catch {}
+                  }
+                }}
+                className="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[11px] font-semibold flex items-center gap-1"
+              >
+                <Download className="w-3 h-3" />
+                <span>App</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -5530,7 +5678,7 @@ export default function StudentDashboardPage() {
                           Choose a PDF, PowerPoint, Word document, or image
                         </p>
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                          Up to 1 GB
+                          Up to 1.5 GB &bull; Instant slide &amp; text extraction
                         </p>
                         <input
                           id="new-session-file-input"
@@ -6039,6 +6187,109 @@ export default function StudentDashboardPage() {
           onClose={() => setSelectedPlanForPayment(null)}
           userEmail={user?.email || profile?.email || ""}
         />
+      )}
+
+      {/* Mobile Native Bottom Navigation Bar (When on Top-Level Dashboard) */}
+      {!activeSession && (
+        <nav
+          aria-label="Mobile quick navigation"
+          className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 px-2 py-1.5 flex items-center justify-around shadow-lg"
+        >
+          {[
+            { id: "home", label: "Overview", icon: Home },
+            { id: "sessions", label: "Sessions", icon: BookOpen },
+            { id: "new_upload", label: "Add Slide", icon: Plus, isPrimary: true },
+            { id: "groups", label: "Groups", icon: Users },
+            { id: "exam_tracker", label: "Exams", icon: Calendar },
+          ].map((item) => {
+            const Icon = item.icon;
+            const active = dashboardScope === item.id;
+            if (item.isPrimary) {
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setShowNewSessionModal(true)}
+                  className="flex flex-col items-center justify-center -mt-3 px-3 py-1.5 rounded-xl bg-blue-600 text-white shadow-md"
+                >
+                  <Icon className="w-4 h-4" />
+                  <span className="text-[10px] font-semibold mt-0.5">{item.label}</span>
+                </button>
+              );
+            }
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setDashboardScope(item.id as any)}
+                className={`flex flex-col items-center justify-center px-2 py-1 rounded-lg transition-colors ${
+                  active
+                    ? "text-blue-600 dark:text-blue-400 font-semibold"
+                    : "text-slate-500 dark:text-slate-400"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                <span className="text-[10px] mt-0.5">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
+      {/* QR Code Share Modal inside Dashboard */}
+      {showQrModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-xs p-4"
+          onClick={() => setShowQrModal(false)}
+        >
+          <div
+            className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setShowQrModal(false)}
+              className="absolute top-3.5 right-3.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
+              aria-label="Close QR Modal"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 text-xs font-semibold mb-3">
+              <QrCode className="w-3.5 h-3.5" />
+              <span>Scan to Join LAMLA Guide AI</span>
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+              Instant Phone &amp; Laptop Access
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 mb-4">
+              Point any phone camera at this QR code to open the study platform immediately.
+            </p>
+
+            <div className="bg-white p-3 rounded-xl border border-slate-200 inline-block shadow-xs">
+              <img
+                src="/lamla_guide_ai_qr_code.png"
+                alt="LAMLA Guide AI QR Code"
+                className="w-52 h-52 object-contain mx-auto"
+              />
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2">
+              <a
+                href="/lamla_guide_ai_qr_poster.png"
+                download="LAMLA_Guide_AI_QR_Poster.png"
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors shadow-xs"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download Printable Class Poster</span>
+              </a>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 break-all">
+                https://lamla-guide-ai.onrender.com
+              </p>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

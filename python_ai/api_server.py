@@ -91,13 +91,13 @@ class RateLimiter:
             cutoff = now - 60.0
 
             if any(path.startswith(p) for p in ("/api/ai", "/api/upload-and-parse", "/api/documents/process", "/api/documents/extract")):
-                limit = 35  # 35 heavy requests per minute
+                limit = 150  # 150 heavy requests per minute per IP (supports campus Wi-Fi NAT)
             elif any(path.startswith(p) for p in ("/api/auth", "/auth/login", "/auth/signup")):
-                limit = 20  # 20 auth attempts per minute to stop credential stuffing
+                limit = 40  # 40 auth attempts per minute
             elif path.startswith("/api/study-groups"):
-                limit = 30  # 30 group operations per minute
+                limit = 120  # 120 group operations per minute
             else:
-                limit = 200  # 200 general page / API requests per minute
+                limit = 600  # 600 general page / API requests per minute
 
             key = f"{ip}:{limit}"
             timestamps = [t for t in self._history.get(key, []) if t > cutoff]
@@ -321,7 +321,7 @@ async def upload_and_parse(file: UploadFile = File(...)):
     import uuid
     import re as _re
 
-    MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60 MB safe maximum for slide decks & PDFs
+    MAX_UPLOAD_BYTES = 1536 * 1024 * 1024  # 1.5 GB maximum for large slide decks, videos & PDFs
     ALLOWED_EXTS = {"pptx", "pdf", "docx", "doc", "txt", "md", "jpg", "jpeg", "png", "webp"}
 
     raw_filename = file.filename or "uploaded_file"
@@ -344,14 +344,14 @@ async def upload_and_parse(file: UploadFile = File(...)):
         total_read = 0
         with open(temp_path, "wb") as buffer:
             while True:
-                chunk = await file.read(64 * 1024)  # Stream in 64 KB blocks for memory efficiency
+                chunk = await file.read(512 * 1024)  # Stream in 512 KB blocks for fast 1GB+ throughput
                 if not chunk:
                     break
                 total_read += len(chunk)
                 if total_read > MAX_UPLOAD_BYTES:
                     raise HTTPException(
                         status_code=400,
-                        detail="File exceeds the maximum safe upload limit of 60 MB. Please upload standard slide decks or PDFs under 60 MB.",
+                        detail="File exceeds the maximum upload limit of 1.5 GB.",
                     )
                 buffer.write(chunk)
                 file_hasher.update(chunk)

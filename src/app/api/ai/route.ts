@@ -15,12 +15,13 @@ import {
 import { curateEducationalVideos } from "@/lib/videoCurator";
 import { generateLocalExamPlan, calculateLocalSpacedRepetition } from "@/lib/studyScheduler";
 
-const PYTHON_API_URL = process.env.PYTHON_AI_URL || "http://127.0.0.1:8000";
+const getPythonApiUrl = () => process.env.PYTHON_AI_URL || `http://127.0.0.1:${process.env.PORT || "7860"}`;
 
 // Helper to attempt communication with the Python AI Engine
 async function callPythonAI(endpoint: string, method: string = "POST", body?: any, timeoutMs: number = 30000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const PYTHON_API_URL = getPythonApiUrl();
 
   try {
     const res = await fetch(`${PYTHON_API_URL}${endpoint}`, {

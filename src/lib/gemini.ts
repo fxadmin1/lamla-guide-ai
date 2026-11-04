@@ -15,6 +15,8 @@ const VALID_FAST_MODELS = [
 ];
 let preferredGeminiModel: string | null = null;
 const deadGeminiModels = new Set<string>();
+const keyCooldownUntil = new Map<string, number>();
+let freeCloudCooldownUntil = 0;
 
 interface GenerateContentOptions {
   systemPrompt?: string;
@@ -59,8 +61,12 @@ export async function callGemini(
       });
 
   let lastError: any = null;
+  const now = Date.now();
 
   for (const apiKey of GEMINI_API_KEYS) {
+    if ((keyCooldownUntil.get(apiKey) || 0) > now) {
+      continue;
+    }
     for (const model of candidateModels) {
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -85,7 +91,7 @@ export async function callGemini(
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(28000),
+          signal: AbortSignal.timeout(8000),
         });
 
         if (!response.ok) {
@@ -93,13 +99,19 @@ export async function callGemini(
             deadGeminiModels.add(model);
             continue;
           }
-          if (response.status === 429 || response.status === 403) {
+          if (response.status === 400 || response.status === 401 || response.status === 403) {
+            keyCooldownUntil.set(apiKey, Date.now() + 15 * 60 * 1000);
+            lastError = new Error(`Gemini key unavailable (${response.status}) on ${model}`);
+            break;
+          }
+          if (response.status === 429) {
+            keyCooldownUntil.set(apiKey, Date.now() + 90 * 1000);
             lastError = new Error(`Gemini quota (${response.status}) on ${model}`);
-            break; // rotate immediately to next API key
+            break;
           }
           const errorText = await response.text();
           lastError = new Error(`Gemini API error (${response.status}) on ${model}: ${errorText.slice(0, 120)}`);
-          continue;
+          break;
         }
 
         const data = await response.json();
@@ -109,14 +121,15 @@ export async function callGemini(
           return text;
         }
       } catch (err) {
+        keyCooldownUntil.set(apiKey, Date.now() + 60 * 1000);
         lastError = err;
-        continue;
+        break;
       }
     }
   }
 
-  // Zero-credit-exhaustion cloud fallback for text prompts so millions of users never hit quota walls
-  if (typeof promptOrParts === "string") {
+  // Zero-credit-exhaustion cloud fallback for text prompts with strict 4s timeout & cooldown memory
+  if (typeof promptOrParts === "string" && Date.now() >= freeCloudCooldownUntil) {
     try {
       const sys =
         (options.systemPrompt || "You are LAMLA Guide AI, an accurate academic tutor.") +
@@ -130,14 +143,14 @@ export async function callGemini(
           model: "openai",
           messages: [
             { role: "system", content: sys },
-            { role: "user", content: promptOrParts.slice(0, 28000) },
+            { role: "user", content: promptOrParts.slice(0, 18000) },
           ],
           temperature: options.temperature ?? 0.3,
           ...(options.responseMimeType === "application/json"
             ? { response_format: { type: "json_object" } }
             : {}),
         }),
-        signal: AbortSignal.timeout(24000),
+        signal: AbortSignal.timeout(4000),
       });
       if (fbRes.ok) {
         const rawText = (await fbRes.text()).trim();
@@ -150,10 +163,11 @@ export async function callGemini(
             // fall through
           }
         }
-        if (rawText) return rawText;
+        if (rawText && rawText.length > 10) return rawText;
       }
+      freeCloudCooldownUntil = Date.now() + 5 * 60 * 1000;
     } catch {
-      // ignore fallback error
+      freeCloudCooldownUntil = Date.now() + 5 * 60 * 1000;
     }
   }
 
