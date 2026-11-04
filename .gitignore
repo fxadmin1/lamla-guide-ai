@@ -39,3 +39,13 @@ __pycache__/
 *$py.class
 .cache/
 python_ai/.cache/
+
+# scratch media build artifacts
+scratch/audio/
+scratch/video_clips/
+scratch/video_frames/
+scratch/master_slides/
+scratch/*.mp4
+scratch/*.wav
+scratch/*.png
+scratch/clips_manifest.txt

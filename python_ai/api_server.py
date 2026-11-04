@@ -56,10 +56,10 @@ app = FastAPI(
     version="1.1.0"
 )
 
-# Enable hardened CORS for Next.js web application and secure origins
+# Enable hardened CORS for Next.js web application, custom domains, and secure cloud origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|.*\.onrender\.com|.*\.hf\.space|.*\.koyeb\.app)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|.*lamlaguide.*|.*\.onrender\.com|.*\.hf\.space|.*\.koyeb\.app|.*\.dpdns\.org|.*\.duckdns\.org|.*\.is-a\.dev|.*\.eu\.org|.*\.pp\.ua)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
