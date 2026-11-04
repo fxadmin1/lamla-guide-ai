@@ -170,6 +170,7 @@ def _spawn_next_process() -> subprocess.Popen:
 
     child_env = os.environ.copy()
     child_env["PORT"] = str(NEXT_INTERNAL_PORT)
+    child_env["PUBLIC_PORT"] = str(PUBLIC_PORT)
     child_env["HOSTNAME"] = "127.0.0.1"
     child_env["PYTHON_AI_URL"] = f"http://127.0.0.1:{PUBLIC_PORT}"
     child_env["NEXT_TELEMETRY_DISABLED"] = "1"

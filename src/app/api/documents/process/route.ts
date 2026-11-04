@@ -6,17 +6,21 @@ import {
   generateStudyNotesWithAI,
   generateFlashcardsWithAI,
   generateDetailedExplanationWithAI,
-  extractTextFromImageWithAI
+  extractTextFromImageWithAI,
+  getCandidatePythonUrls,
 } from "@/lib/gemini";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-key";
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
-const getPythonApiUrl = () => process.env.PYTHON_AI_URL || `http://127.0.0.1:${process.env.PORT || "7860"}`;
+const supabaseUrl = process.env["NEXT_PUBLIC_SUPABASE_URL"] || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const serviceRoleKey = process.env["SUPABASE_SERVICE_ROLE_KEY"] || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const anonKey = process.env["NEXT_PUBLIC_SUPABASE_ANON_KEY"] || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
+const getPythonApiUrl = () => getCandidatePythonUrls()[0] || "http://127.0.0.1:10000";
 
-const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
-  auth: { autoRefreshToken: false, persistSession: false },
-});
+const hasValidServiceRole = Boolean(serviceRoleKey && serviceRoleKey !== "placeholder-service-key" && serviceRoleKey.length > 20);
+const supabaseServiceAdmin = hasValidServiceRole
+  ? createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+  : null;
 
 // Up to 5 minutes execution duration for large document processing
 export const maxDuration = 300;
@@ -31,12 +35,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized: Missing authentication token." }, { status: 401 });
     }
 
-    const authClient = createClient(supabaseUrl, anonKey);
+    const authClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
     const { data: { user }, error: authErr } = await authClient.auth.getUser(token);
 
     if (authErr || !user) {
       return NextResponse.json({ error: "Unauthorized: Invalid or expired session." }, { status: 401 });
     }
+
+    const supabaseAdmin = supabaseServiceAdmin || authClient;
 
     // 2. Enforce subscription plan limits (Basic/Free: 5, Standard: 25, Premium: UNLIMITED, Admin: UNLIMITED)
     const { data: userProfile } = await supabaseAdmin
@@ -131,27 +140,30 @@ export async function POST(req: NextRequest) {
 
     // 3. If file provided and not already extracted on client, forward file to Python AI streaming service
     if (file && !extractedText) {
-      try {
-        const pythonFormData = new FormData();
-        pythonFormData.append("file", file, filename);
+      for (const candidateBase of getCandidatePythonUrls()) {
+        try {
+          const pythonFormData = new FormData();
+          pythonFormData.append("file", file, filename);
 
-        const pythonRes = await fetch(`${PYTHON_API_URL}/api/upload-and-parse`, {
-          method: "POST",
-          body: pythonFormData,
-          signal: AbortSignal.timeout(180000),
-        });
+          const pythonRes = await fetch(`${candidateBase}/api/upload-and-parse`, {
+            method: "POST",
+            body: pythonFormData,
+            signal: AbortSignal.timeout(180000),
+          });
 
-        if (pythonRes.ok) {
-          const pythonJson = await pythonRes.json();
-          if (pythonJson.success && pythonJson.data) {
-            extractedText = pythonJson.data.full_text || "";
-            pageCount = pythonJson.data.total_slides || pythonJson.data.total_pages || 1;
-            structuredData = pythonJson.data;
-            parsedViaPython = true;
+          if (pythonRes.ok) {
+            const pythonJson = await pythonRes.json();
+            if (pythonJson.success && pythonJson.data) {
+              extractedText = pythonJson.data.full_text || "";
+              pageCount = pythonJson.data.total_slides || pythonJson.data.total_pages || 1;
+              structuredData = pythonJson.data;
+              parsedViaPython = true;
+              break;
+            }
           }
+        } catch {
+          // Try next candidate port
         }
-      } catch (pythonErr) {
-        console.warn("Python parsing service unreachable, using Next.js fallback parser:", pythonErr);
       }
     }
 

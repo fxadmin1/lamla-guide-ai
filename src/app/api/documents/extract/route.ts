@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { extractTextFromImageWithAI } from "@/lib/gemini";
+import { extractTextFromImageWithAI, getCandidatePythonUrls } from "@/lib/gemini";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
-const getPythonApiUrl = () => process.env.PYTHON_AI_URL || `http://127.0.0.1:${process.env.PORT || "7860"}`;
+const supabaseUrl = process.env["NEXT_PUBLIC_SUPABASE_URL"] || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const anonKey = process.env["NEXT_PUBLIC_SUPABASE_ANON_KEY"] || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
+const getPythonApiUrl = () => getCandidatePythonUrls()[0] || "http://127.0.0.1:10000";
 
 export const maxDuration = 180;
 
@@ -51,23 +51,26 @@ export async function POST(req: NextRequest) {
       const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
       text = await extractTextFromImageWithAI(base64, file.type || "image/jpeg");
     } else {
-      try {
-        const pyForm = new FormData();
-        pyForm.append("file", file, name);
-        const pyRes = await fetch(`${PYTHON_API_URL}/api/upload-and-parse`, {
-          method: "POST",
-          body: pyForm,
-          signal: AbortSignal.timeout(240000),
-        });
-        if (pyRes.ok) {
-          const json = await pyRes.json();
-          if (json.success && json.data) {
-            text = json.data.full_text || "";
-            pages = json.data.total_slides || json.data.total_pages || json.data.total_sections || 1;
+      for (const candidateBase of getCandidatePythonUrls()) {
+        try {
+          const pyForm = new FormData();
+          pyForm.append("file", file, name);
+          const pyRes = await fetch(`${candidateBase}/api/upload-and-parse`, {
+            method: "POST",
+            body: pyForm,
+            signal: AbortSignal.timeout(240000),
+          });
+          if (pyRes.ok) {
+            const json = await pyRes.json();
+            if (json.success && json.data) {
+              text = json.data.full_text || "";
+              pages = json.data.total_slides || json.data.total_pages || json.data.total_sections || 1;
+              break;
+            }
           }
+        } catch {
+          // Try next candidate port
         }
-      } catch (e) {
-        console.warn("Python parser unreachable for /api/documents/extract:", e);
       }
       if (!text.trim()) {
         return NextResponse.json(

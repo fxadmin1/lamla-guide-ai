@@ -1537,15 +1537,32 @@ export default function StudentDashboardPage() {
       });
 
       const data = await res.json();
-      if (!data.questions || data.questions.length === 0) {
+      const rawReturned: any[] = Array.isArray(data.questions) ? data.questions : [];
+      if (rawReturned.length === 0) {
         throw new Error(data.error || "Could not generate questions for this session's materials.");
       }
+
+      // Deduplicate questions by normalized stem and correct answer so questions/answers never repeat
+      const seenStems = new Set<string>();
+      const uniqueQuestions: any[] = [];
+      for (const q of rawReturned) {
+        let qText = String(q.question || q.question_text || "").trim();
+        if ((q.type === "assertion_reasoning" || quizQuestionType === "assertion_reasoning") && q.assertion && q.reason && !qText.includes("Reason")) {
+          qText = `Assertion (A): ${q.assertion}\nReason (R): ${q.reason}`;
+        }
+        const normKey = `${q.type || quizQuestionType}:${qText.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+        if (!qText || seenStems.has(normKey)) continue;
+        seenStems.add(normKey);
+        uniqueQuestions.push({ ...q, question: qText });
+      }
+
+      const finalQuestions = uniqueQuestions.length > 0 ? uniqueQuestions : rawReturned;
 
       const { data: newQuiz, error: qErr } = await supabase.from("quizzes").insert({
         document_id: activeSession.id,
         user_id: user.id,
-        title: `${activeSession.title} - ${quizQuestionType.toUpperCase()} Quiz (${quizQuestionCount} Qs)`,
-        total_questions: data.questions.length,
+        title: `${activeSession.title} - ${quizQuestionType.toUpperCase()} Quiz (${finalQuestions.length} Qs)`,
+        total_questions: finalQuestions.length,
         difficulty: quizDifficulty,
         time_limit_minutes: quizTimeLimitMinutes,
         passing_score: 70,
@@ -1553,7 +1570,7 @@ export default function StudentDashboardPage() {
 
       if (qErr || !newQuiz) throw new Error(qErr?.message || "Failed to save quiz.");
 
-      const formatted = data.questions.map((q: any, i: number) => {
+      const formatted = finalQuestions.map((q: any, i: number) => {
         let exp = q.explanation || "";
         if (q.markingGuide) exp += `\n\nMarking Guide: ${q.markingGuide}`;
         if (q.misconception) exp += `\n\nCommon Pitfall: ${q.misconception}`;
@@ -1862,7 +1879,7 @@ export default function StudentDashboardPage() {
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Student";
 
   return (
-    <div className="flex-1 w-full max-w-[100vw] overflow-x-hidden bg-white dark:bg-slate-950 pb-24 sm:pb-20 transition-colors">
+    <div className="flex-1 w-full max-w-[100vw] overflow-x-hidden bg-white dark:bg-slate-950 pb-20 transition-colors">
       
       {/* ─────────────────────────────────────────────────────────
           TOP HEADER - MOBILE-FIRST FULL-VIEWPORT WORKSPACE BAR
@@ -1914,18 +1931,6 @@ export default function StudentDashboardPage() {
                 onMinuteCompleted={handleMinuteCompleted}
               />
             </div>
-
-            {!activeSession && (
-              <button
-                type="button"
-                onClick={() => setShowNewSessionModal(true)}
-                className="inline-flex items-center gap-1 px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs"
-              >
-                <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                <span className="hidden sm:inline">New session</span>
-                <span className="sm:hidden">New</span>
-              </button>
-            )}
 
             <Link
               href="/"
@@ -4068,21 +4073,38 @@ export default function StudentDashboardPage() {
                                     {q.source_reference || q.sourceRef}
                                   </span>
                                 )}
-                                {q.question_type === "assertion_reasoning" ? (
-                                  <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
-                                    <div className="flex items-start gap-2.5">
-                                      <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 font-semibold text-xs shrink-0">Assertion</span>
-                                      <p className="text-sm sm:text-base font-medium text-slate-900 dark:text-slate-100 leading-relaxed">
-                                        {q.assertion || (q.question_text?.includes("Assertion (A):") ? q.question_text.split(/\nReason \(R\):/i)[0]?.replace(/^Assertion \(A\):\s*/i, "").trim() : q.question_text || q.question)}
-                                      </p>
-                                    </div>
-                                    <div className="flex items-start gap-2.5">
-                                      <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 font-semibold text-xs shrink-0">Reason</span>
-                                      <p className="text-sm sm:text-base font-medium text-slate-900 dark:text-slate-100 leading-relaxed">
-                                        {q.reason || (q.question_text?.includes("Reason (R):") ? q.question_text.split(/\nReason \(R\):/i)[1]?.trim() : "")}
-                                      </p>
-                                    </div>
-                                  </div>
+                                {(q.question_type === "assertion_reasoning" || q.type === "assertion_reasoning") ? (
+                                  (() => {
+                                    const rawQ = String(q.question_text || q.question || "").trim();
+                                    const mAr = rawQ.match(/(?:Assertion\s*(?:\(A\))?\s*[:\-]\s*)([\s\S]+?)\s*(?:\n+|\s+)(?:Reason\s*(?:\(R\))?\s*[:\-]\s*)([\s\S]+)/i);
+                                    const parsedA = q.assertion || (mAr ? mAr[1].trim() : rawQ);
+                                    const parsedR = q.reason || (mAr ? mAr[2].trim() : "");
+                                    return (
+                                      <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                                          Assertion &amp; Reasoning Examination Item
+                                        </p>
+                                        <div className="flex items-start gap-2.5">
+                                          <span className="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-950/80 text-blue-800 dark:text-blue-200 font-bold text-xs shrink-0">
+                                            Assertion (A)
+                                          </span>
+                                          <p className="text-sm sm:text-base font-medium text-slate-900 dark:text-slate-100 leading-relaxed">
+                                            {parsedA}
+                                          </p>
+                                        </div>
+                                        {parsedR && (
+                                          <div className="flex items-start gap-2.5 pt-2 border-t border-slate-200/70 dark:border-slate-700/70">
+                                            <span className="px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/80 text-indigo-800 dark:text-indigo-200 font-bold text-xs shrink-0">
+                                              Reason (R)
+                                            </span>
+                                            <p className="text-sm sm:text-base font-medium text-slate-900 dark:text-slate-100 leading-relaxed">
+                                              {parsedR}
+                                            </p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()
                                 ) : (
                                   <p className="text-base sm:text-lg font-bold text-slate-900 dark:text-white leading-snug">
                                     {q.question_text || q.question}
@@ -6187,53 +6209,6 @@ export default function StudentDashboardPage() {
           onClose={() => setSelectedPlanForPayment(null)}
           userEmail={user?.email || profile?.email || ""}
         />
-      )}
-
-      {/* Mobile Native Bottom Navigation Bar (When on Top-Level Dashboard) */}
-      {!activeSession && (
-        <nav
-          aria-label="Mobile quick navigation"
-          className="sm:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 px-2 py-1.5 flex items-center justify-around shadow-lg"
-        >
-          {[
-            { id: "home", label: "Overview", icon: Home },
-            { id: "sessions", label: "Sessions", icon: BookOpen },
-            { id: "new_upload", label: "Add Slide", icon: Plus, isPrimary: true },
-            { id: "groups", label: "Groups", icon: Users },
-            { id: "exam_tracker", label: "Exams", icon: Calendar },
-          ].map((item) => {
-            const Icon = item.icon;
-            const active = dashboardScope === item.id;
-            if (item.isPrimary) {
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setShowNewSessionModal(true)}
-                  className="flex flex-col items-center justify-center -mt-3 px-3 py-1.5 rounded-xl bg-blue-600 text-white shadow-md"
-                >
-                  <Icon className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold mt-0.5">{item.label}</span>
-                </button>
-              );
-            }
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setDashboardScope(item.id as any)}
-                className={`flex flex-col items-center justify-center px-2 py-1 rounded-lg transition-colors ${
-                  active
-                    ? "text-blue-600 dark:text-blue-400 font-semibold"
-                    : "text-slate-500 dark:text-slate-400"
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                <span className="text-[10px] mt-0.5">{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
       )}
 
       {/* QR Code Share Modal inside Dashboard */}

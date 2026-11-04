@@ -10,36 +10,37 @@ import {
   explainThreeWaysWithAI,
   evaluateActiveRecallWithAI,
   generateTeachMeFromZeroWithAI,
-  regenerateNotesSectionWithAI
+  regenerateNotesSectionWithAI,
+  getCandidatePythonUrls,
 } from "@/lib/gemini";
 import { curateEducationalVideos } from "@/lib/videoCurator";
 import { generateLocalExamPlan, calculateLocalSpacedRepetition } from "@/lib/studyScheduler";
 
-const getPythonApiUrl = () => process.env.PYTHON_AI_URL || `http://127.0.0.1:${process.env.PORT || "7860"}`;
-
-// Helper to attempt communication with the Python AI Engine
+// Helper to attempt communication with the Python AI Engine across candidate runtime ports
 async function callPythonAI(endpoint: string, method: string = "POST", body?: any, timeoutMs: number = 30000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const PYTHON_API_URL = getPythonApiUrl();
-
-  try {
-    const res = await fetch(`${PYTHON_API_URL}${endpoint}`, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) {
+  let lastErr: any = null;
+  for (const base of getCandidatePythonUrls()) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${base}${endpoint}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        return await res.json();
+      }
       const errText = await res.text();
-      throw new Error(`Python API responded ${res.status}: ${errText}`);
+      lastErr = new Error(`Python API (${base}) responded ${res.status}: ${errText}`);
+    } catch (err: any) {
+      clearTimeout(timer);
+      lastErr = err;
     }
-    return await res.json();
-  } catch (err: any) {
-    clearTimeout(timer);
-    throw err;
   }
+  throw lastErr || new Error("Python AI engine unreachable across all candidate ports.");
 }
 
 export async function GET(req: NextRequest) {
