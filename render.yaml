@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: lamla-guide-ai
+    name: lamlaguide
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
