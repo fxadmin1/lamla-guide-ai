@@ -76,7 +76,7 @@ SCENES = [
         "image_type": "title_card",
         "image_file": str(FRAMES_DIR / "scene_01_landing.png"),
         "audio_file": str(AUDIO_DIR / "scene_01.wav"),
-        "transcript": "Welcome to LAMLA Guide AI, the intelligent, all-in-one educational platform engineered for Senior High School, University students, and independent learners. In this comprehensive walkthrough, we will explore every part of the platform, show what each section does, and demonstrate how LAMLA Guide AI empowers your daily learning."
+        "transcript": "Welcome to LAMLA Guide AI! It's never too late to study. Whether you're preparing for your high school finals, tackling tough university coursework, or learning independently, we built this platform to make studying feel natural, fast, and genuinely rewarding. In this video, we're going to walk through every part of the website together, so you can see exactly how it works."
     },
     {
         "id": "scene_02",
@@ -94,7 +94,7 @@ SCENES = [
         "image_type": "browser_shot",
         "image_file": str(FRAMES_DIR / "scene_01_landing.png"),
         "audio_file": str(AUDIO_DIR / "scene_02.wav"),
-        "transcript": "The home page provides a clean, modern, and predominantly white design with subtle blue accents and zero visual clutter. The top navigation bar gives students instant access to the personal dashboard, practice quizzes, live class circles, flashcards, and the study planner, ensuring effortless navigation on both desktop and mobile devices."
+        "transcript": "Right here on the home page, the first thing you'll notice is how clean and open everything feels. We designed it with a crisp white look and subtle blue accents, keeping all distractions out of your way. At the top, you can jump straight to your dashboard, practice quizzes, live study circles, flashcards, or the study planner in a single click."
     },
     {
         "id": "scene_03",
@@ -112,7 +112,7 @@ SCENES = [
         "image_type": "browser_shot",
         "image_file": str(FRAMES_DIR / "scene_02_how_it_works.png"),
         "audio_file": str(AUDIO_DIR / "scene_03.wav"),
-        "transcript": "The How It Works section details our core pedagogical methodology. In just three simple steps, students upload their lecture materials, receive comprehensive multi-slide analysis, interact with a conversational Socratic AI tutor, and practice with automated exam-style assessments."
+        "transcript": "So, how does it all work? It's simple. First, you upload your lecture slides or notes. Next, our AI instantly indexes every concept, diagram, and definition. Then, you explore and ask questions with your personal tutor. And finally, you test yourself with targeted practice quizzes to make sure everything sticks."
     },
     {
         "id": "scene_04",
@@ -130,7 +130,7 @@ SCENES = [
         "image_type": "browser_shot",
         "image_file": str(FRAMES_DIR / "scene_04_signup.png"),
         "audio_file": str(AUDIO_DIR / "scene_04.wav"),
-        "transcript": "Student registration is streamlined and secure. When creating an account, learners choose their institution and study level. Right after signing up, the platform prompts the student to enable notifications, ensuring they never miss upcoming study sessions, spaced revision alerts, or live class quizzes."
+        "transcript": "Getting started takes just seconds. You can choose your institution, select your level of study, and create your account securely. Right after signing up, the browser asks if you'd like study reminders, so you never miss an upcoming revision session, spaced repetition prompt, or live group quiz."
     },
     {
         "id": "scene_05",
@@ -148,7 +148,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "04_Personal_Study_Dashboard_status.png"),
         "audio_file": str(AUDIO_DIR / "scene_05.wav"),
-        "transcript": "The personal dashboard is the student's central learning cockpit. At the top right, notice the foreground study timer. Unlike ordinary apps that allow passive background timing, our focus tracker measures your genuine revision exclusively while you are actively on the platform, automatically pausing when you switch away."
+        "transcript": "Here inside your dashboard, you have a complete bird's-eye view of your study life. Look at the top right: that's our Foreground Study Tracker. It only counts time when you're actively on the website. If you switch tabs or leave, it pauses immediately. That means no fake hours, just real, honest progress."
     },
     {
         "id": "scene_06",
@@ -166,7 +166,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "feat_01_slide_ingestion_portrait.png"),
         "audio_file": str(AUDIO_DIR / "scene_06.wav"),
-        "transcript": "Uploading your lecture slides is instant and cost-effective. Supporting PowerPoint, PDF, Word documents, and textbook photos, our zero-storage ingestion engine streams and indexes content on the fly, allowing millions of students to upload massive lecture decks without wasting server storage."
+        "transcript": "When it comes to your study materials, you can drop in PowerPoint slides, PDFs, Word documents, or even photos of textbook pages. What's amazing is our zero-storage engine: it reads and analyzes everything in real time without filling up expensive cloud servers, making the platform fast and accessible for millions of students."
     },
     {
         "id": "scene_07",
@@ -184,7 +184,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "05_AI_Tutor_and_SVG_Concept_Drawing_status.png"),
         "audio_file": str(AUDIO_DIR / "scene_07.wav"),
-        "transcript": "Meet your personal AI Tutor. Unlike basic chatbots restricted only to slide text, our tutor is backed by open-domain academic knowledge and web enrichment. When students ask to visualize or draw a concept, the AI generates fully labeled, interactive vector SVG diagrams directly inside the chat interface."
+        "transcript": "Meet your personal AI tutor! This isn't a basic bot that only repeats what's on your slides. It has broad academic knowledge, and can explain concepts at your exact level. Best of all, if you ask it to visualize or draw something, it generates clear, labeled vector diagrams right inside your chat!"
     },
     {
         "id": "scene_08",
@@ -202,7 +202,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "06_Timed_Practice_Quizzes_status.png"),
         "audio_file": str(AUDIO_DIR / "scene_08.wav"),
-        "transcript": "The practice quiz section enables students to generate up to fifty questions per slide, with guaranteed zero repeated questions across tests. When time expires or when you submit, each question is evaluated independently with step-by-step reasoning and misconception alerts."
+        "transcript": "Ready to test your knowledge? Our practice quiz generator can create up to fifty questions per slide, with guaranteed zero duplicate questions. When you finish, every single answer is marked independently with clear explanations and misconception alerts, to help you learn from any mistakes."
     },
     {
         "id": "scene_09",
@@ -220,7 +220,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "07_Live_Class_Circles_and_Synced_Quizzes_status.png"),
         "audio_file": str(AUDIO_DIR / "scene_09.wav"),
-        "transcript": "For collaborative learning, Live Class Circles connect entire classrooms in real time over WebSockets. Study groups compete in synchronized multiplayer quizzes where everyone receives questions simultaneously, timers count down together, and live scores update the circle leaderboard."
+        "transcript": "Studying with friends is where the platform really comes alive. In Live Class Circles, entire classrooms can join real-time multiplayer quizzes. Everyone sees questions at the exact same second, countdown timers run in sync, and live scores update the leaderboard as you compete."
     },
     {
         "id": "scene_10",
@@ -238,7 +238,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "feat_06_scheduled_quizzes_portrait.png"),
         "audio_file": str(AUDIO_DIR / "scene_10.wav"),
-        "transcript": "Group leaders can schedule quizzes in advance with an exact launch date and time. Sharing a class invite link allows fellow classmates to preview the circle and join with one click. When the scheduled start time arrives, the live quiz launches automatically for all connected students."
+        "transcript": "Class leaders can also schedule quizzes in advance. You can set the exact date and time, share a quick invite link with your classmates, and let them preview the circle details. When start time arrives, the live quiz launches automatically for everyone who joined."
     },
     {
         "id": "scene_11",
@@ -256,7 +256,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "08_Study_Routines_and_Focus_Tracker_status.png"),
         "audio_file": str(AUDIO_DIR / "scene_11.wav"),
-        "transcript": "The study analytics section provides deep insights into mastery progress, subject strengths, and exam readiness. Students can track total focused hours, review confidence scores, and establish structured daily study routines tailored to their academic goals."
+        "transcript": "Over in analytics, you can see exactly where you stand before exam day. The platform visualizes your focused study hours, pinpoints your strongest and weakest topics, and creates structured daily routines to help you stay confident and avoid last-minute cramming."
     },
     {
         "id": "scene_12",
@@ -274,7 +274,7 @@ SCENES = [
         "image_type": "split_card",
         "image_file": str(ARTIFACT_DIR / "10_Progressive_Web_App_Mobile_Install_status.png"),
         "audio_file": str(AUDIO_DIR / "scene_12.wav"),
-        "transcript": "LAMLA Guide AI is a full Progressive Web App. With a single tap, students can install it to their iPhone, Android, or PC home screen. It operates smoothly, caches offline resources with modern service workers, and provides an effortless native mobile experience."
+        "transcript": "You can also install LAMLA Guide AI directly on your phone or computer as a Progressive Web App! Just tap 'Add to Home Screen' on your iPhone or Android. It loads instantly, caches resources for offline review, and feels like a native app without eating up your storage."
     },
     {
         "id": "scene_13",
@@ -292,7 +292,7 @@ SCENES = [
         "image_type": "browser_shot",
         "image_file": str(FRAMES_DIR / "scene_03_features.png"),
         "audio_file": str(AUDIO_DIR / "scene_13.wav"),
-        "transcript": "Protected by enterprise-grade OWASP security, rate limiting, and zero-lag performance optimizations, LAMLA Guide AI is completely ready for students and schools worldwide. Visit our website today to start learning smarter. Because at LAMLA Guide AI, It's Never Too Late To Study."
+        "transcript": "Behind the scenes, the entire system is built with bulletproof security, anti-DDoS rate limiting, and zero-lag performance, so that thousands of students can study simultaneously without a hitch. Start your journey with LAMLA Guide AI today, because it's never too late to study!"
     }
 ]
 
