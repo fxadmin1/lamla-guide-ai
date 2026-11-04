@@ -161,12 +161,10 @@ def _stop_next_process():
 
 atexit.register(_stop_next_process)
 
+_watchdog_task: asyncio.Task | None = None
 
-@asynccontextmanager
-async def _unified_lifespan(app_instance):
-    global _next_proc, _http_client
 
-    ensure_nextjs_build()
+def _spawn_next_process() -> subprocess.Popen:
     node_bin = _find_node()
     next_cli = ROOT_DIR / "node_modules" / "next" / "dist" / "bin" / "next"
 
@@ -185,7 +183,55 @@ async def _unified_lifespan(app_instance):
 
     print(f"[LAMLA Unified] Starting internal Next.js ({mode_label}) on 127.0.0.1:{NEXT_INTERNAL_PORT}...")
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    _next_proc = subprocess.Popen(cmd, cwd=str(ROOT_DIR), env=child_env, creationflags=creationflags)
+    return subprocess.Popen(cmd, cwd=str(ROOT_DIR), env=child_env, creationflags=creationflags)
+
+
+async def _watchdog_and_keepalive_loop():
+    """
+    24/7 Uninterrupted Uptime Guardian:
+      1. Monitors internal Next.js child process every 15s and auto-restarts it if it ever exits.
+      2. Pings the external public URL (/health) every 8 minutes when deployed on Render/cloud
+         so the container stays warm 24/7 alongside UptimeRobot.
+    """
+    global _next_proc
+    last_external_ping = time.monotonic()
+    while True:
+        try:
+            await asyncio.sleep(15.0)
+            # 1. Self-healing process check
+            if _next_proc is not None and _next_proc.poll() is not None:
+                print(
+                    f"[LAMLA 24/7 Watchdog] Internal Next.js exited (code {_next_proc.returncode}). "
+                    "Auto-restarting immediately..."
+                )
+                _next_proc = _spawn_next_process()
+                await _wait_for_port("127.0.0.1", NEXT_INTERNAL_PORT, timeout_sec=30.0)
+                print("[LAMLA 24/7 Watchdog] Internal Next.js recovered and healthy.")
+
+            # 2. External keep-alive ping every 8 minutes (480s) if public URL is configured
+            now = time.monotonic()
+            if now - last_external_ping >= 480.0:
+                last_external_ping = now
+                public_url = (
+                    os.environ.get("PUBLIC_APP_URL")
+                    or os.environ.get("RENDER_EXTERNAL_URL")
+                    or (f"https://{os.environ['SPACE_HOST']}" if os.environ.get("SPACE_HOST") else "")
+                ).strip().rstrip("/")
+                if public_url and public_url.startswith("http"):
+                    async with httpx.AsyncClient(timeout=10.0) as ping_client:
+                        await ping_client.get(f"{public_url}/health", headers={"User-Agent": "LAMLA-24x7-KeepAlive/1.0"})
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            pass
+
+
+@asynccontextmanager
+async def _unified_lifespan(app_instance):
+    global _next_proc, _http_client, _watchdog_task
+
+    ensure_nextjs_build()
+    _next_proc = _spawn_next_process()
 
     await _wait_for_port("127.0.0.1", NEXT_INTERNAL_PORT, timeout_sec=45.0 if DEV_MODE else 25.0)
 
@@ -200,11 +246,16 @@ async def _unified_lifespan(app_instance):
         ensure_scheduled_timers_started()
     except Exception:
         pass
-    print(f"[LAMLA Unified] ALL-IN-ONE SERVER READY -> http://localhost:{PUBLIC_PORT}")
+
+    _watchdog_task = asyncio.create_task(_watchdog_and_keepalive_loop())
+    print(f"[LAMLA Unified] ALL-IN-ONE SERVER READY (24/7 Watchdog Active) -> http://localhost:{PUBLIC_PORT}")
 
     try:
         yield
     finally:
+        if _watchdog_task is not None:
+            _watchdog_task.cancel()
+            _watchdog_task = None
         if _http_client is not None:
             await _http_client.aclose()
             _http_client = None
