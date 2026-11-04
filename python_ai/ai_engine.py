@@ -504,7 +504,103 @@ class PythonAIEngine:
                     "full": f"--- Slide {slide_idx}: {first_line} ---\n{joined}",
                 })
 
-        return slides
+        return self._filter_substantive_slides(slides)
+
+    @staticmethod
+    def _is_institutional_or_boilerplate_line(line: str) -> bool:
+        clean = line.strip()
+        if not clean:
+            return True
+        lower = clean.lower()
+        # Preserve lines that define or explain an actual academic concept
+        if re.search(r"\b(is defined as|refers to|is the process|occurs when|states that|is caused by|function of|mechanism of)\b", lower):
+            return False
+        boilerplate_patterns = [
+            r"\b(university of|college of|faculty of|department of|school of|institute of|polytechnic)\b",
+            r"^\s*(lecturer|instructor|facilitator|professor|prof\.|dr\.|mr\.|mrs\.|compiled by|prepared by|presented by)\b",
+            r"^\s*(course\s*code|course\s*title|course\s*name|credit\s*hours|academic\s*year|semester|office\s*hours|contact|email|phone|tel)\b",
+            r"^\s*(welcome\s+to|table\s+of\s+contents|course\s+outline|lecture\s+outline|agenda|thank\s+you|questions\s*\??|any\s+questions|references|bibliography)\s*$",
+            r"\b(all\s+rights\s+reserved|copyright\s*©?)\b",
+            r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$",
+        ]
+        return any(re.search(pat, lower) for pat in boilerplate_patterns)
+
+    def _filter_substantive_slides(self, slides: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Strips out school/university/department/lecturer cover metadata and skips purely administrative
+        intro/outline/thank-you slides so summaries, notes, flashcards, and quizzes focus 100% on the main academic topic.
+        """
+        if not slides:
+            return []
+
+        cleaned_slides: List[Dict[str, Any]] = []
+        for idx, sl in enumerate(slides):
+            raw_title = str(sl.get("title") or "").strip()
+            raw_body = str(sl.get("body") or "").strip()
+
+            kept_lines: List[str] = []
+            for ln in raw_body.splitlines():
+                if self._is_institutional_or_boilerplate_line(ln):
+                    continue
+                kept_lines.append(ln)
+
+            clean_body = "\n".join(kept_lines).strip()
+            title_is_admin = self._is_institutional_or_boilerplate_line(raw_title) or bool(
+                re.match(r"^(slide|page)\s*\d+$", raw_title.lower())
+            )
+
+            # If the slide title was institutional (e.g. "University of Ghana" or "Department of..."),
+            # promote the first substantive line of the body to be the title.
+            new_title = raw_title
+            if title_is_admin and kept_lines:
+                first_good = re.sub(r"^[\s•\-\*#\d\.\)]+", "", kept_lines[0]).strip()
+                if 3 <= len(first_good) <= 85:
+                    new_title = first_good
+
+            # Detect pure cover/outline/closing slides with no substantive academic sentences
+            is_early_cover_or_outline = idx <= 1 and (
+                len(clean_body) < 35
+                or bool(re.match(r"^(course\s+outline|lecture\s+outline|table\s+of\s+contents|agenda|learning\s+objectives|objectives)\b", new_title.lower()))
+            )
+            is_closing_slide = idx == len(slides) - 1 and len(slides) > 1 and (
+                len(clean_body) < 30
+                or bool(re.match(r"^(thank\s+you|questions|references|bibliography|end\s+of\s+lecture)\b", new_title.lower()))
+            )
+
+            if (title_is_admin and len(clean_body) < 35) or is_early_cover_or_outline or is_closing_slide:
+                continue
+
+            kind = sl.get("kind", "Slide")
+            num = sl.get("num", idx + 1)
+            label = sl.get("label", f"{kind} {num}")
+            cleaned_slides.append({
+                "num": num,
+                "kind": kind,
+                "label": label,
+                "title": new_title or f"{kind} {num}",
+                "body": clean_body or raw_body,
+                "full": f"--- {label}: {new_title} ---\n{clean_body or raw_body}".strip(),
+            })
+
+        return cleaned_slides if cleaned_slides else slides
+
+    def _extract_main_topic_title(self, slides: List[Dict[str, Any]], fallback: str = "Core Academic Topic") -> str:
+        """Finds the genuine academic main topic across substantive slides (ignoring generic or intro headers)."""
+        generic_titles = {
+            "introduction", "overview", "background", "summary", "conclusion", "outline",
+            "lecture", "course", "objectives", "learning objectives", "definitions", "untitled",
+        }
+        for s in slides:
+            t = str(s.get("title") or "").strip()
+            t_low = t.lower()
+            if (
+                t
+                and t_low not in generic_titles
+                and not re.match(r"^(slide|page|section|chapter|unit|week|lecture|module)\s*\d*$", t_low)
+                and not self._is_institutional_or_boilerplate_line(t)
+            ):
+                return t
+        return slides[0]["title"] if slides else fallback
 
     def _chunk_text_by_slides(self, content: str, max_chunk_chars: int = 38000) -> List[str]:
         slides = self._parse_individual_slides(content)
@@ -711,12 +807,14 @@ class PythonAIEngine:
         Zero-credit, high-precision academic question synthesizer:
         - Supports real 5-option WASSCE/University Assertion & Reasoning (Cases A, B, C, D, E)
         - Uses 12+ varied question stems and distinct slide facts so questions NEVER repeat
+        - Never indicates or mentions the slide/page number in the question text or options
         """
         facts = self._extract_slide_facts(slide)
-        label = slide["label"]
         title = slide["title"]
+        if re.match(r"^(slide|page)\s*\d+$", title.lower()):
+            title = "this topic"
         fact = facts[(q_index - 1) % len(facts)]
-        second_fact = facts[q_index % len(facts)] if len(facts) > 1 else f"This principle governs how {title} operates across {label}."
+        second_fact = facts[q_index % len(facts)] if len(facts) > 1 else f"This principle governs how {title} operates in practice."
         concept_focus = self._extract_concept_focus(fact, title)
 
         # Gather distinct facts from other slides for cross-slide distractors & Case B Assertion-Reasoning
@@ -745,7 +843,6 @@ class PythonAIEngine:
                 "D. Assertion (A) is false, but Reason (R) is true.",
                 "E. Both Assertion (A) and Reason (R) are false.",
             ]
-            # Check if `fact` contains an explicit causal connector ("because", "since", "due to", "therefore", "by", "through")
             causal_split = re.split(
                 r"\b(?:because|since|due to the fact that|due to|as a result of|which causes|thereby|by means of)\b",
                 fact,
@@ -761,13 +858,13 @@ class PythonAIEngine:
                 true_causal_reason = (
                     second_fact
                     if second_fact != fact
-                    else f"The underlying mechanism of {concept_focus} on {label} directly regulates this relationship in {title}."
+                    else f"The underlying mechanism of {concept_focus} directly regulates this relationship in {title}."
                 )
 
             unrelated_true_reason = (
                 other_facts[(q_index - 1) % len(other_facts)]
                 if other_facts
-                else f"Separate classification rules in {title} apply to independent stages of the syllabus."
+                else f"Separate classification rules in {title} apply to independent stages of the process."
             )
             false_assertion = self._invert_fact_to_falsehood(true_assertion, title, other_facts, q_index)
             false_reason = self._invert_fact_to_falsehood(true_causal_reason, title, other_facts, q_index + 2)
@@ -778,31 +875,31 @@ class PythonAIEngine:
             if chosen_case == "A":
                 a_stmt, r_stmt = true_assertion, true_causal_reason
                 exp_text = (
-                    f"Both Assertion (A) and Reason (R) are true statements from {label} ({title}), "
+                    f"Both Assertion (A) and Reason (R) are true statements regarding {title}, "
                     f"and Reason (R) provides the direct underlying cause/mechanism that explains Assertion (A)."
                 )
             elif chosen_case == "B":
                 a_stmt, r_stmt = true_assertion, unrelated_true_reason
                 exp_text = (
-                    f"Both Assertion (A) and Reason (R) are factually true statements in the lecture material, "
+                    f"Both Assertion (A) and Reason (R) are factually true statements, "
                     f"but Reason (R) addresses a separate point and is NOT the causal explanation for Assertion (A)."
                 )
             elif chosen_case == "C":
                 a_stmt, r_stmt = true_assertion, false_reason
                 exp_text = (
-                    f"Assertion (A) is true according to {label} ({title}): \"{true_assertion}\" "
-                    f"However, Reason (R) is false because in reality: {true_causal_reason}"
+                    f"Assertion (A) is true ({true_assertion}), "
+                    f"however Reason (R) is false because in reality: {true_causal_reason}"
                 )
             elif chosen_case == "D":
                 a_stmt, r_stmt = false_assertion, true_causal_reason
                 exp_text = (
-                    f"Assertion (A) is false because on {label} ({title}), the true principle is: \"{true_assertion}\" "
-                    f"Reason (R), however, is a factually true statement from the slide."
+                    f"Assertion (A) is false because the true principle is: \"{true_assertion}\" "
+                    f"Reason (R), however, is a factually true statement."
                 )
             else:
                 a_stmt, r_stmt = false_assertion, false_reason
                 exp_text = (
-                    f"Both Assertion (A) and Reason (R) are false statements that invert the actual concepts on {label} ({title}). "
+                    f"Both Assertion (A) and Reason (R) are false statements that invert the actual concepts of {title}. "
                     f"The correct principle is: {true_assertion}"
                 )
 
@@ -820,26 +917,27 @@ class PythonAIEngine:
                 "testedFact": f"{a_stmt} | {r_stmt}",
                 "topic": title,
                 "difficulty": "intermediate",
-                "sourceRef": f"Found in: {label}",
+                "sourceRef": "",
+                "_slide_num": slide["num"],
             }
 
-        # ── 2. TRUE / FALSE (Balanced True & False statements, Zero Repeats) ──
+        # ── 2. TRUE / FALSE (Balanced True & False statements, Zero Repeats, No Slide Refs) ──
         if effective_type == "true_false":
             is_true_stmt = (q_index % 2) == 1
             if is_true_stmt:
                 stmt = fact
                 ans = "True"
-                exp = f"True. {label} ({title}) explicitly states: {fact}"
+                exp = f"True. Regarding {title}: {fact}"
             else:
                 stmt = self._invert_fact_to_falsehood(fact, title, other_facts, q_index)
                 ans = "False"
-                exp = f"False. This statement inverts the actual principle on {label} ({title}), which states: {fact}"
+                exp = f"False. This statement inverts the actual principle of {title}, which states: {fact}"
 
             tf_prefixes = [
-                f"Evaluate the accuracy of this statement regarding {concept_focus} ({label}): {stmt}",
-                f"True or False ({label} — {title}): {stmt}",
-                f"Based on the principles of {title} on {label}, determine whether the following claim is true or false: {stmt}",
-                f"In the context of {concept_focus} ({label}), is the following statement factually accurate? {stmt}",
+                f"Evaluate the accuracy of this statement regarding {concept_focus}: {stmt}",
+                f"True or False: {stmt}",
+                f"Based on the principles of {title}, determine whether the following claim is true or false: {stmt}",
+                f"In the context of {concept_focus}, is the following statement factually accurate? {stmt}",
             ]
             return {
                 "id": q_index,
@@ -852,16 +950,17 @@ class PythonAIEngine:
                 "testedFact": stmt,
                 "topic": title,
                 "difficulty": "intermediate",
-                "sourceRef": f"Found in: {label}",
+                "sourceRef": "",
+                "_slide_num": slide["num"],
             }
 
         # ── 3. SHORT ANSWER ──
         if effective_type == "short_answer":
             sa_stems = [
-                f"Explain the core principle and functional significance of {concept_focus} as presented on {label} ({title}).",
-                f"How does {label} ({title}) characterize {concept_focus}, and what role does it play in the overall mechanism?",
-                f"State and briefly explain the key rule governing {concept_focus} on {label} ({title}).",
-                f"Distinguish the primary features of {concept_focus} highlighted in {title} ({label}).",
+                f"Explain the core principle and functional significance of {concept_focus} in {title}.",
+                f"How is {concept_focus} characterized, and what role does it play in the overall mechanism of {title}?",
+                f"State and briefly explain the key rule governing {concept_focus}.",
+                f"Distinguish the primary features of {concept_focus} highlighted in {title}.",
             ]
             return {
                 "id": q_index,
@@ -869,17 +968,17 @@ class PythonAIEngine:
                 "type": "short_answer",
                 "options": [],
                 "correctAnswer": f"{fact} {second_fact if second_fact != fact else ''}".strip(),
-                "markingGuide": f"1 mark for accurately defining/identifying {concept_focus}; 1 mark for stating the mechanism or outcome on {label}: {fact}",
-                "explanation": f"Model synthesis from {label} ({title}): {fact}",
-                "misconception": "Ensure your written response includes exact technical terminology from the slide.",
+                "markingGuide": f"1 mark for accurately defining/identifying {concept_focus}; 1 mark for stating the mechanism or outcome: {fact}",
+                "explanation": f"Model answer: {fact}",
+                "misconception": "Ensure your written response includes exact technical terminology.",
                 "testedFact": fact,
                 "topic": title,
                 "difficulty": "intermediate",
-                "sourceRef": f"Found in: {label}",
+                "sourceRef": "",
+                "_slide_num": slide["num"],
             }
 
         # ── 4. MULTIPLE CHOICE (12 Varied Academic Stems + Plausible Distractors + False-Statement Variant) ──
-        # Every 5th MCQ tests "Which of the following statements is FALSE / NOT accurate..." for authentic exam variety
         is_negative_mcq = (q_index % 5) == 0 and len(facts) >= 2
         letters = ["A", "B", "C", "D"]
         correct_pos = (q_index - 1) % 4
@@ -888,7 +987,7 @@ class PythonAIEngine:
             target_falsehood = self._invert_fact_to_falsehood(fact, title, other_facts, q_index)
             true_pool = [f for f in (facts + other_facts) if f != fact]
             while len(true_pool) < 3:
-                true_pool.append(f"{title} on {label} establishes systematic relationships among its core parameters.")
+                true_pool.append(f"{title} establishes systematic relationships among its core parameters.")
             opts_raw: List[str] = []
             t_idx = 0
             for pos in range(4):
@@ -897,8 +996,8 @@ class PythonAIEngine:
                 else:
                     opts_raw.append(f"{letters[pos]}. {true_pool[t_idx][:185]}")
                     t_idx += 1
-            q_stem = f"Regarding {concept_focus} in {title} ({label}), which of the following statements is FALSE (an examination misconception)?"
-            exp_msg = f"Option {letters[correct_pos]} is FALSE because {label} ({title}) actually establishes that: {fact}"
+            q_stem = f"Regarding {concept_focus} in {title}, which of the following statements is FALSE (an examination misconception)?"
+            exp_msg = f"Option {letters[correct_pos]} is FALSE because the correct principle is: {fact}"
         else:
             distractors: List[str] = [
                 self._invert_fact_to_falsehood(fact, title, other_facts, q_index),
@@ -924,20 +1023,20 @@ class PythonAIEngine:
                     d_idx += 1
 
             mcq_stems = [
-                f"Regarding {concept_focus} on {label} ({title}), which of the following statements is accurate?",
-                f"Which statement best explains the primary mechanism or principle of {concept_focus} in {title} ({label})?",
-                f"What is the core functional significance of {concept_focus} established on {label} ({title})?",
-                f"When applying the concepts of {title} ({label}), which conclusion accurately characterizes {concept_focus}?",
-                f"How does the lecture material on {label} define or characterize {concept_focus}?",
-                f"Which relationship or property directly governs {concept_focus} according to {label} ({title})?",
-                f"In analyzing {title} ({label}), which point accurately accounts for the role of {concept_focus}?",
-                f"An examination question on {label} ({title}) asks about {concept_focus}. Which option is correct?",
-                f"Which key feature distinguishes {concept_focus} within the framework of {title} ({label})?",
-                f"According to the technical breakdown on {label}, which statement holds true for {concept_focus}?",
-                f"Which outcome or rule is directly associated with {concept_focus} in {title} ({label})?",
+                f"Regarding {concept_focus} in {title}, which of the following statements is accurate?",
+                f"Which statement best explains the primary mechanism or principle of {concept_focus}?",
+                f"What is the core functional significance of {concept_focus} in {title}?",
+                f"When applying the concepts of {title}, which conclusion accurately characterizes {concept_focus}?",
+                f"Which of the following accurately defines or characterizes {concept_focus}?",
+                f"Which relationship or property directly governs {concept_focus} in {title}?",
+                f"In analyzing {title}, which point accurately accounts for the role of {concept_focus}?",
+                f"Which option correctly states a governing rule of {concept_focus}?",
+                f"Which key feature distinguishes {concept_focus} within the framework of {title}?",
+                f"Which statement holds true for {concept_focus} under standard conditions?",
+                f"Which outcome or mechanism is directly associated with {concept_focus} in {title}?",
             ]
             q_stem = mcq_stems[(q_index - 1) % len(mcq_stems)]
-            exp_msg = f"On {label} ({title}), the material establishes that: {fact}"
+            exp_msg = f"Regarding {title}: {fact}"
 
         return {
             "id": q_index,
@@ -946,15 +1045,16 @@ class PythonAIEngine:
             "options": opts_raw,
             "correctAnswer": letters[correct_pos],
             "explanation": exp_msg,
-            "misconception": "Incorrect options invert key relationships or conflate mechanisms from other slides.",
+            "misconception": "Incorrect options invert key relationships or conflate mechanisms from other topics.",
             "testedFact": fact,
             "topic": title,
             "difficulty": "intermediate",
-            "sourceRef": f"Found in: {label}",
+            "sourceRef": "",
+            "_slide_num": slide["num"],
         }
 
     # ─────────────────────────────────────────────────────────────
-    # 1. DETAILED MASTER STUDY SUMMARY (INTERNET-ENRICHED + VISUAL)
+    # 1. COMPLETE STUDY SUMMARY OF EVERYTHING (MAIN TOPIC FOCUS + WELL SPACED)
     # ─────────────────────────────────────────────────────────────
     def generate_exam_summary(
         self,
@@ -963,37 +1063,44 @@ class PythonAIEngine:
         educational_level: str = "Senior High School (SHS) & University",
     ) -> str:
         slides = self._parse_individual_slides(content)
-        enrichment = get_cached_document_enrichment(content)
+        main_topic = self._extract_main_topic_title(slides, "Core Lecture Topic")
+        enrichment = get_cached_document_enrichment(content, title=main_topic)
         web_context = (
             f"\n\nVERIFIED INTERNET ACADEMIC ENRICHMENT (use to deepen explanations where slide bullets are brief):\n{enrichment['knowledge_brief']}"
             if enrichment.get("knowledge_brief")
             else ""
         )
 
-        chunks = self._chunk_text_by_slides(content, max_chunk_chars=42000)
+        # Build clean substantive text from filtered slides so cover/school/department slides are excluded
+        substantive_content = "\n\n".join(s["full"] for s in slides) if slides else content
+        chunks = self._chunk_text_by_slides(substantive_content, max_chunk_chars=42000)
         slide_count = max(1, len(slides))
 
         system = f"""You are LAMLA Guide AI's Chief Educational Synthesizer.
 Slogan: "It's Never Too Late To Study."
 Target Audience: {educational_level}.
-Style: Detailed, clear, structured Master Summary covering all {slide_count} slides/pages.
+Primary Academic Topic: {main_topic}.
 
 MANDATORY REQUIREMENTS:
-1. DETAILED & COMPLETE: Provide a thorough, detailed summary that synthesizes the entire uploaded material from Slide 1 through Slide {slide_count}, enriched with broader academic clarity where slide bullets are brief.
-2. CLEAR VISUAL CONCEPT DIAGRAM: Include ONE clean, accurate, standalone labeled `<svg>` diagram inside a ```svg code block (`viewBox="0 0 760 300"`, clean `#ffffff` background, `#e2e8f0` border, `#2563eb` accents, dark `#0f172a` readable labels, directional arrows) illustrating the overarching framework or core mechanism.
-3. STRUCTURED SECTIONS:
-   - `# Detailed Study Summary`
-   - `## 1. Executive Conceptual Overview` (2–3 thorough paragraphs uniting the entire deck)
+1. FOCUS 100% ON THE MAIN ACADEMIC TOPIC ({main_topic}):
+   - Completely IGNORE any school name, university, faculty, department, course code, lecturer name, welcome remarks, or table of contents.
+   - Start immediately with the core academic subject matter and synthesize EVERYTHING across all substantive slides from start to finish.
+2. GENEROUS VISUAL SPACING:
+   - Leave clear blank lines between paragraphs, sub-sections, and bullet points so the summary is airy, well-spaced, and easy to read and scroll through quickly.
+3. CLEAR VISUAL CONCEPT DIAGRAM:
+   - Include ONE clean, accurate, standalone labeled `<svg>` diagram inside a ```svg code block (`viewBox="0 0 760 300"`, `#ffffff` background, `#2563eb` accents, dark `#0f172a` labels) illustrating the overarching framework of {main_topic}.
+4. STRUCTURED SECTIONS:
+   - `# Complete Study Summary: {main_topic}`
+   - `## 1. Main Topic & Executive Synthesis of Everything` (2–3 well-spaced paragraphs uniting all concepts in the lecture)
    - `## 2. Labeled Concept Architecture` (the ```svg diagram + concise walkthrough)
-   - `## 3. Comprehensive Thematic Breakdown Across Slides` (detailed synthesis of every major section with `[Slide X]` citations)
-   - `## 4. High-Yield Definitions, Formulas & Principles Table` (Markdown table: Term/Principle | Detailed Meaning & Mechanism | Exam Significance & Slide)
-   - `## 5. Step-by-Step Process Flow` (clean ```flowchart block + explanation)
-   - `## 6. High-Priority Exam Pitfalls & Rapid Self-Check` (common exam traps + 5 rapid check questions with answers)"""
+   - `## 3. Complete Topic-by-Topic Breakdown Across the Material` (comprehensive synthesis of every major topic/section with generous spacing between bullet points)
+   - `## 4. High-Yield Definitions, Laws & Mechanisms Table` (Markdown table: Key Term / Principle | Core Meaning & Mechanism | Practical / Exam Significance)
+   - `## 5. End-to-End Process Flow & Key Exam Takeaways` (clean ```flowchart block + high-yield takeaways)"""
 
         try:
             if len(chunks) == 1:
                 return self.execute_ai_completion(
-                    f"Create a detailed, thorough Master Study Summary covering all {slide_count} slides:\n\n{chunks[0]}{web_context}",
+                    f"Create a complete, well-spaced Master Study Summary of everything on the main topic ({main_topic}):\n\n{chunks[0]}{web_context}",
                     system_prompt=system,
                     temperature=0.28,
                 )
@@ -1002,7 +1109,7 @@ MANDATORY REQUIREMENTS:
                 futs = [
                     pool.submit(
                         self.execute_ai_completion,
-                        f"Create a detailed study summary for Part {i} of {len(chunks)}:\n\n{chunk}{web_context if i == 1 else ''}",
+                        f"Create a complete study summary for Part {i} of {len(chunks)} on {main_topic}:\n\n{chunk}{web_context if i == 1 else ''}",
                         system,
                         False,
                         0.28,
@@ -1012,60 +1119,52 @@ MANDATORY REQUIREMENTS:
                 parts = [f.result() for f in futs]
             return "\n\n---\n\n".join(parts)
         except Exception:
-            # Zero-downtime, rich 6-section Master Study Summary fallback
-            deck_title = slides[0]["title"] if slides else "Lecture Study Material"
             svg = build_labeled_concept_svg(
-                deck_title,
+                main_topic,
                 [s["title"] for s in slides[:5]] or ["Core Concept", "Mechanism", "Application"],
-                f"Complete Conceptual Architecture ({slide_count} Slides)",
+                f"Complete Conceptual Architecture — {main_topic}",
             )
-            overview_topics = ", ".join(s["title"] for s in slides[:8]) if slides else deck_title
+            overview_topics = ", ".join(s["title"] for s in slides[:10]) if slides else main_topic
             thematic_sections = []
             table_rows = [
-                "| Key Concept / Slide Topic | Core Principle & Mechanism | Slide Reference |",
+                "| Key Concept / Topic | Core Principle & Mechanism | Exam & Practical Significance |",
                 "| :--- | :--- | :--- |",
             ]
             for s in slides:
                 s_facts = self._extract_slide_facts(s)
-                bullet_lines = "\n".join(f"  - {f}" for f in s_facts[:4])
-                thematic_sections.append(f"### {s['label']}: {s['title']} `[{s['label']}]`\n{bullet_lines}")
+                bullet_lines = "\n\n".join(f"- {f}" for f in s_facts[:5])
+                thematic_sections.append(f"### {s['title']} `[{s['label']}]`\n\n{bullet_lines}")
                 primary_fact = s_facts[0].replace("|", "/")[:140]
                 focus_term = self._extract_concept_focus(s_facts[0], s["title"]).replace("|", "/")
-                table_rows.append(f"| **{focus_term}** | {primary_fact} | `{s['label']}` |")
+                table_rows.append(f"| **{focus_term}** | {primary_fact} | Core examinable principle ({s['title'][:32]}) |")
 
-            flow_steps = " ---> ".join(f"[{s['label']}: {s['title'][:28]}]" for s in slides[:5]) or f"[{deck_title}]"
-            self_check_lines = []
-            for idx, s in enumerate(slides[:5], 1):
-                sf = self._extract_slide_facts(s)[0]
-                self_check_lines.append(
-                    f"{idx}. **What is the core principle established on {s['label']} ({s['title']})?**\n"
-                    f"   - *Answer*: {sf} `[{s['label']}]`"
-                )
-
+            flow_steps = " ---> ".join(f"[{s['title'][:28]}]" for s in slides[:6]) or f"[{main_topic}]"
             web_note = (
-                f"\n\n## 7. Broader Academic & Internet Context\n{enrichment['knowledge_brief']}"
+                f"\n\n---\n\n## 6. Internet-Enriched Academic Context\n\n{enrichment['knowledge_brief']}"
                 if enrichment.get("knowledge_brief")
                 else ""
             )
             return (
-                f"# Detailed Study Summary\n\n"
-                f"## 1. Executive Conceptual Overview\n"
-                f"This study session synthesizes **{slide_count} slides/sections** covering **{overview_topics}**. "
-                f"Each section builds progressively from foundational definitions to core mechanisms and examinable applications.\n\n"
-                f"## 2. Labeled Concept Architecture\n"
+                f"# Complete Study Summary: {main_topic}\n\n"
+                f"## 1. Main Topic & Executive Synthesis of Everything\n\n"
+                f"This complete study summary covers **{main_topic}** across all **{slide_count} substantive sections** ({overview_topics}).\n\n"
+                f"Every key definition, underlying mechanism, and practical relationship across the entire material is synthesized below with clear spacing for rapid revision.\n\n"
+                f"---\n\n"
+                f"## 2. Labeled Concept Architecture\n\n"
                 f"```svg\n{svg}\n```\n\n"
-                f"## 3. Comprehensive Thematic Breakdown Across Slides\n"
-                f"{chr(10).join(thematic_sections)}\n\n"
-                f"## 4. High-Yield Definitions, Formulas & Principles Table\n"
+                f"---\n\n"
+                f"## 3. Complete Topic-by-Topic Breakdown Across the Material\n\n"
+                f"{chr(10) + chr(10) + ('\n\n---\n\n'.join(thematic_sections))}\n\n"
+                f"---\n\n"
+                f"## 4. High-Yield Definitions, Laws & Mechanisms Table\n\n"
                 f"{chr(10).join(table_rows)}\n\n"
-                f"## 5. Step-by-Step Process Flow\n"
-                f"```flowchart\n{flow_steps}\n```\n\n"
-                f"## 6. High-Priority Exam Pitfalls & Rapid Self-Check\n"
-                f"{chr(10).join(self_check_lines)}{web_note}"
+                f"---\n\n"
+                f"## 5. End-to-End Process Flow & Key Exam Takeaways\n\n"
+                f"```flowchart\n{flow_steps}\n```{web_note}"
             )
 
     # ─────────────────────────────────────────────────────────────
-    # 2. EVERY-SLIDE DETAILED STUDY NOTES (GUARANTEED ALL SLIDES)
+    # 2. SLIDE-BY-SLIDE DETAILED STUDY NOTES (SPACED + INTERNET-ENRICHED)
     # ─────────────────────────────────────────────────────────────
     def generate_study_notes(
         self,
@@ -1074,63 +1173,120 @@ MANDATORY REQUIREMENTS:
         educational_level: str = "Senior High School (SHS) & University",
     ) -> str:
         """
-        Generates deeply detailed study notes guaranteeing concepts from EVERY SINGLE SLIDE
-        are thoroughly explained and enriched with internet knowledge.
+        Generates deeply detailed, openly spaced study notes that:
+        - Skip school/department/lecturer cover slides and focus on the main academic topic
+        - Move systematically from one slide to the next
+        - Leave generous blank spacing within and between explanations so nothing looks clustered
+        - Use live Internet/Wikipedia academic research to explain concepts not fully explained on the slides
         """
         slides = self._parse_individual_slides(content)
-        enrichment = get_cached_document_enrichment(content, title=subject)
+        main_topic = self._extract_main_topic_title(slides, subject or "Core Academic Topic")
+        enrichment = get_cached_document_enrichment(content, title=main_topic)
         web_brief = enrichment.get("knowledge_brief", "")
 
-        # Group slides into parallel batches of 10 slides so large decks finish fast AND never skip a single slide
-        batch_size = 10
+        # Fetch per-slide internet academic context in parallel for concepts that need deeper explanation
+        slide_web_notes: Dict[int, str] = {}
+        try:
+            unique_queries: List[Tuple[int, str]] = []
+            seen_q = set()
+            for s in slides[:18]:
+                q_term = f"{s['title']} {main_topic}" if s["title"].lower() != main_topic.lower() else s["title"]
+                q_norm = q_term.lower().strip()
+                if q_norm not in seen_q:
+                    seen_q.add(q_norm)
+                    unique_queries.append((s["num"], s["title"]))
+
+            def _fetch_slide_web(item: Tuple[int, str]) -> Tuple[int, str]:
+                s_num, s_title = item
+                info = research_topic_from_web(s_title, include_images=False)
+                return s_num, str(info.get("summary_text") or "").strip()
+
+            with ThreadPoolExecutor(max_workers=4) as web_pool:
+                for s_num, summary_txt in web_pool.map(_fetch_slide_web, unique_queries):
+                    if summary_txt:
+                        slide_web_notes[s_num] = summary_txt
+        except Exception:
+            pass
+
+        batch_size = 8
         slide_batches = [slides[i : i + batch_size] for i in range(0, len(slides), batch_size)] or [slides]
+
+        def _build_spaced_fallback_for_slide(s: Dict[str, Any]) -> str:
+            s_facts = self._extract_slide_facts(s)
+            spaced_bullets = "\n\n".join(f"- **{self._extract_concept_focus(f, s['title'])}:** {f}" for f in s_facts)
+            web_extra = slide_web_notes.get(s["num"], "")
+            if not web_extra and web_brief:
+                web_extra = web_brief[:550]
+            internet_block = (
+                f"\n\n#### 🌐 Internet-Enriched Deep Explanation (Beyond the Slide)\n\n"
+                f"{web_extra}\n\n"
+                f"This additional context clarifies the underlying mechanism and broader academic meaning of **{s['title']}** where the lecture slide bullets are concise."
+                if web_extra
+                else (
+                    f"\n\n#### 💡 Deep Conceptual Breakdown\n\n"
+                    f"In **{main_topic}**, **{s['title']}** connects the foundational definitions on `{s['label']}` to practical problem-solving and examination analysis. "
+                    f"Focus on how each component interacts step by step rather than memorizing isolated lines."
+                )
+            )
+            return (
+                f"## {s['label']} — {s['title']} `[Source: {s['label']}]`\n\n"
+                f"#### 📌 Core Points from This Slide\n\n"
+                f"{spaced_bullets}\n"
+                f"{internet_block}\n"
+            )
 
         def _render_notes_batch(batch_idx: int, batch_slides: List[Dict[str, Any]]) -> str:
             slide_labels = ", ".join(s["label"] for s in batch_slides)
-            batch_text = "\n\n".join(s["full"] for s in batch_slides)
+            batch_blocks = []
+            for s in batch_slides:
+                w_txt = slide_web_notes.get(s["num"], "")
+                w_line = f"\n[Internet Research for {s['label']} ({s['title']}): {w_txt}]" if w_txt else ""
+                batch_blocks.append(f"{s['full']}{w_line}")
+            batch_text = "\n\n".join(batch_blocks)
+
             system = f"""You are LAMLA Guide AI's Master Lecturer & Chief Examiner.
-Subject: {subject}. Level: {educational_level}.
-MANDATORY RULE — EVERY SINGLE SLIDE MUST BE COVERED:
-This batch contains: {slide_labels}.
-You MUST explain the concepts from EVERY SINGLE ONE of these slides ({slide_labels}) in rich, clear academic depth. Do NOT skip or merge away any slide!
+Main Topic: {main_topic}. Level: {educational_level}.
 
-For each slide/topic:
-1. Cite the exact slide explicitly using `[Source: Slide X]` (or `[Source: Page X]`).
-2. Explain definitions, underlying mechanisms (HOW and WHY it works), formulas/classifications, practical examples, and common exam traps.
-3. Where a slide only lists short bullet points, expand them clearly using reliable academic & internet context so the student understands completely.
-4. Include Markdown comparison tables and a clean ```svg labeled diagram or ```flowchart where helpful."""
+MANDATORY FORMATTING & PEDAGOGICAL RULES:
+1. FOCUS ON THE MAIN ACADEMIC TOPIC ({main_topic}):
+   - Completely IGNORE any school/university name, faculty, department, course code, or lecturer intro.
+2. MOVE SYSTEMATICALLY FROM ONE SLIDE TO THE NEXT:
+   - This batch contains: {slide_labels}.
+   - Create a dedicated, clearly titled section (`## Slide X — <Topic Title> [Source: Slide X]`) for each slide in order ({slide_labels}).
+3. LEAVE GENEROUS SPACES WITHIN EXPLANATIONS (NEVER CLUSTER TEXT):
+   - Put a blank line between EVERY paragraph and between EVERY bullet point (`\\n\\n`) so the explanation breathes and never looks cramped or clustered.
+   - Separate each slide section with a horizontal divider (`\\n\\n---\\n\\n`).
+4. USE INTERNET KNOWLEDGE TO EXPLAIN UNEXPLAINED SLIDE CONCEPTS:
+   - Whenever a slide lists a term, bullet point, formula, or mechanism without fully explaining it, use the provided Internet Research and your academic knowledge to explain **what it means**, **how and why it works**, and **real-world examples** in a dedicated `#### 🌐 Deeper Explanation & Context` sub-section."""
 
-            extra_web = f"\n\nSupplementary Internet Research:\n{web_brief}" if (web_brief and batch_idx == 0) else ""
+            extra_web = f"\n\nGeneral Internet Reference:\n{web_brief}" if (web_brief and batch_idx == 0) else ""
             prompt = (
-                f"Write comprehensive, detailed study notes covering EVERY SINGLE SLIDE ({slide_labels}) below:\n\n"
+                f"Write openly spaced, slide-by-slide Detailed Study Notes for ({slide_labels}) on {main_topic}, "
+                f"using internet context to explain any brief or unexplained concepts:\n\n"
                 f"{batch_text}{extra_web}"
             )
             try:
                 res = self.execute_ai_completion(prompt, system_prompt=system, temperature=0.25)
-                # Verify every slide number in batch_slides appears; append concise coverage for any omitted slide
                 missing = [
                     s for s in batch_slides
                     if not re.search(rf"\b(?:Slide|Page)\s*{s['num']}\b", res, re.IGNORECASE)
                 ]
                 if missing:
-                    addendum = ["\n\n### Additional Slide Concept Coverage"]
+                    addendum = ["\n\n---\n\n"]
                     for ms in missing:
-                        addendum.append(
-                            f"#### {ms['title']} `[Source: {ms['label']}]`\n"
-                            f"{ms['body'] or ms['title']}"
-                        )
-                    res += "\n\n".join(addendum)
+                        addendum.append(_build_spaced_fallback_for_slide(ms))
+                    res += "\n\n---\n\n".join(addendum)
                 return res
             except Exception:
-                fallback_blocks = []
-                for s in batch_slides:
-                    fallback_blocks.append(
-                        f"## {s['label']}: {s['title']} `[Source: {s['label']}]`\n\n{s['body']}"
-                    )
-                return "\n\n".join(fallback_blocks)
+                return "\n\n---\n\n".join(_build_spaced_fallback_for_slide(s) for s in batch_slides)
+
+        header_intro = (
+            f"# Detailed Slide-by-Slide Study Notes: {main_topic}\n\n"
+            f"Each slide below is broken down in sequence with generous spacing and enriched with internet academic explanations for concepts that were only briefly mentioned on the slides.\n\n---\n\n"
+        )
 
         if len(slide_batches) == 1:
-            return _render_notes_batch(0, slide_batches[0])
+            return header_intro + _render_notes_batch(0, slide_batches[0])
 
         with ThreadPoolExecutor(max_workers=min(4, len(slide_batches))) as pool:
             futures = [
@@ -1139,7 +1295,7 @@ For each slide/topic:
             ]
             rendered_parts = [f.result() for f in futures]
 
-        return "\n\n---\n\n".join(rendered_parts)
+        return header_intro + "\n\n---\n\n".join(rendered_parts)
 
     def generate_detailed_explanation(
         self,
@@ -1315,11 +1471,12 @@ Respond ONLY with a valid JSON array:
 
     def generate_flashcards(self, content: str, count: int = 10) -> List[Dict[str, Any]]:
         target_count = min(max(count, 1), 200)
-        slides = self._parse_individual_slides(content)
+        raw_slides = self._parse_individual_slides(content)
+        slides = self._filter_substantive_slides(raw_slides)
         enrichment = get_cached_document_enrichment(content)
         verified_images = enrichment.get("images") or []
 
-        # Group slides into parallel batches for fast generation across all slides
+        # Group slides into parallel batches for fast generation across all substantive slides
         num_workers = min(4, max(1, math.ceil(target_count / 15)))
         slide_groups: List[str] = []
         if slides and num_workers > 1:
@@ -1363,10 +1520,16 @@ Respond ONLY with a valid JSON array:
         # Top up deterministically if needed so user always gets requested cards quickly
         if len(final_cards) < target_count and slides:
             s_idx = 0
-            while len(final_cards) < target_count and s_idx < len(slides) * 2:
+            while len(final_cards) < target_count and s_idx < len(slides) * 3:
                 sl = slides[s_idx % len(slides)]
                 s_idx += 1
-                prompt_front = f"Explain the key principle and components of {sl['title']} ({sl['label']})."
+                variant = (s_idx - 1) // len(slides)
+                if variant == 0:
+                    prompt_front = f"Explain the core mechanism and significance of {sl['title']}."
+                elif variant == 1:
+                    prompt_front = f"What are the primary components and distinguishing features of {sl['title']}?"
+                else:
+                    prompt_front = f"How does {sl['title']} apply in practice or clinical/real-world scenarios?"
                 key = re.sub(r"[^a-z0-9]", "", prompt_front.lower())
                 if key in seen_fronts:
                     continue
@@ -1374,15 +1537,15 @@ Respond ONLY with a valid JSON array:
                 bullet_labels = [
                     ln.strip("•-* \t")[:36]
                     for ln in sl["body"].splitlines()
-                    if len(ln.strip("•-* \t")) > 4
+                    if len(ln.strip("•-* \t")) > 4 and not self._is_institutional_or_boilerplate_line(ln)
                 ][:4]
                 final_cards.append(
                     self._format_visual_flashcard(
                         {
                             "front": prompt_front,
-                            "back": sl["body"][:340] or sl["title"],
+                            "back": sl["body"][:380] or sl["title"],
                             "term": sl["title"],
-                            "slideRef": sl["label"],
+                            "slideRef": "",
                             "labels": bullet_labels,
                         },
                         len(final_cards) + 1,
@@ -1392,8 +1555,30 @@ Respond ONLY with a valid JSON array:
         return final_cards[:target_count]
 
     # ─────────────────────────────────────────────────────────────
-    # 5. FAST PARALLEL QUIZ ENGINE (EVERY SLIDE COVERED + ZERO REPEATS)
+    # 5. FAST PARALLEL QUIZ ENGINE (EVERY SLIDE COVERED + ZERO REPEATS + NO SLIDE NUMBERS IN QUESTIONS)
     # ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _strip_slide_mentions(text: str) -> str:
+        if not text:
+            return ""
+        cleaned = str(text)
+        # Remove parenthetical or bracketed slide/page references like "(Slide 4)", "[Slide 2]", "(Page 5)"
+        cleaned = re.sub(
+            r"\s*[\(\[]\s*(?:Found\s+in\s*:?\s*)?(?:Slide|Page)\s*#?\s*\d+(?:\s*[-–—:]\s*[^\)\]]*)?[\)\]]",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        # Remove inline phrases like "on Slide 3", "according to Slide 4", "in Slide 2", "from Slide 5"
+        cleaned = re.sub(
+            r"\b(?:according\s+to|based\s+on|as\s+shown\s+on|as\s+stated\s+on|on|in|from)\s+(?:Slide|Page)\s*#?\s*\d+\b\s*,?",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        return cleaned
+
     def _normalize_quiz_items(
         self,
         parsed: List[Dict[str, Any]],
@@ -1416,6 +1601,23 @@ Respond ONLY with a valid JSON array:
         for q_idx, q in enumerate(parsed):
             if not isinstance(q, dict):
                 continue
+
+            # Preserve internal slide number for coverage tracking, then blank out public sourceRef
+            if not q.get("_slide_num"):
+                ref_probe = f"{q.get('sourceRef', '')} {q.get('question', '')}"
+                m_sl = re.search(r"\b(?:Slide|Page)\s*#?\s*(\d+)\b", ref_probe, re.IGNORECASE)
+                if m_sl:
+                    q["_slide_num"] = int(m_sl.group(1))
+            q["sourceRef"] = ""
+
+            q["question"] = self._strip_slide_mentions(str(q.get("question", "")))
+            if q.get("explanation"):
+                q["explanation"] = self._strip_slide_mentions(str(q.get("explanation", "")))
+            if q.get("misconception"):
+                q["misconception"] = self._strip_slide_mentions(str(q.get("misconception", "")))
+            if q.get("topic"):
+                q["topic"] = self._strip_slide_mentions(str(q.get("topic", "")))
+
             is_ar = q.get("type") == "assertion_reasoning" or question_type == "assertion_reasoning"
             is_tf = not is_ar and (
                 q.get("type") == "true_false"
@@ -1431,8 +1633,8 @@ Respond ONLY with a valid JSON array:
                 q["correctAnswer"] = ca_match.group(1).upper() if ca_match else "A"
 
                 q_text = str(q.get("question", "")).strip()
-                a_field = str(q.get("assertion", "")).strip()
-                r_field = str(q.get("reason", "")).strip()
+                a_field = self._strip_slide_mentions(str(q.get("assertion", "")).strip())
+                r_field = self._strip_slide_mentions(str(q.get("reason", "")).strip())
                 if (not a_field or not r_field) and "reason" in q_text.lower():
                     m_ar = re.search(
                         r"(?:Assertion\s*(?:\(A\))?\s*[:\-]\s*)(.+?)\s*(?:\n+|\s+)(?:Reason\s*(?:\(R\))?\s*[:\-]\s*)(.+)",
@@ -1440,8 +1642,8 @@ Respond ONLY with a valid JSON array:
                         re.IGNORECASE | re.DOTALL,
                     )
                     if m_ar:
-                        a_field = a_field or m_ar.group(1).strip()
-                        r_field = r_field or m_ar.group(2).strip()
+                        a_field = a_field or self._strip_slide_mentions(m_ar.group(1).strip())
+                        r_field = r_field or self._strip_slide_mentions(m_ar.group(2).strip())
                 if a_field and r_field:
                     q["assertion"] = a_field
                     q["reason"] = r_field
@@ -1453,7 +1655,7 @@ Respond ONLY with a valid JSON array:
                 q["correctAnswer"] = "False" if ca_str.startswith("f") else "True"
             elif isinstance(q.get("options"), list) and len(q["options"]) >= 4:
                 raw_opts = [
-                    re.sub(r"^[A-E][\.\)]\s*", "", str(opt).strip())
+                    self._strip_slide_mentions(re.sub(r"^[A-E][\.\)]\s*", "", str(opt).strip()))
                     for opt in q["options"][:4]
                 ]
                 ca = str(q.get("correctAnswer", "A")).strip()
@@ -1461,7 +1663,6 @@ Respond ONLY with a valid JSON array:
                 if ca_match:
                     ca_idx = letters.index(ca_match.group(1).upper())
                 else:
-                    # Match by option text if model returned full text as correctAnswer
                     ca_lower = re.sub(r"^[A-D][\.\)]\s*", "", ca).lower()
                     ca_idx = next(
                         (i for i, ro in enumerate(raw_opts) if ro.lower() == ca_lower or ca_lower in ro.lower()),
@@ -1509,16 +1710,15 @@ Respond ONLY with a valid JSON array:
         slide_plan_prompt = ""
         if per_slide_plan:
             slide_plan_prompt = (
-                f"\nMANDATORY EVERY-SLIDE DISTRIBUTION:\n{per_slide_plan}\n"
-                "You MUST generate the exact allocated number of questions from EACH listed slide/page "
-                "and set `\"sourceRef\"` to that exact slide (e.g. `\"Found in: Slide 4\"`). "
+                f"\nMANDATORY TOPIC DISTRIBUTION ACROSS SECTIONS:\n{per_slide_plan}\n"
+                "You MUST generate the exact allocated number of questions covering EACH listed topic/section. "
                 "Every single question MUST test a DIFFERENT concept/statement — ZERO repeated or paraphrased questions!"
             )
 
         if question_type == "true_false":
             type_instruct = (
                 'True/False statements (~50% True and ~50% False). options: ["True", "False"]. '
-                'correctAnswer: "True" or "False". Every statement must test a unique slide fact.'
+                'correctAnswer: "True" or "False". Every statement must test a unique academic fact.'
             )
         elif question_type == "short_answer":
             type_instruct = "Short answer questions. options: []. correctAnswer: concise model answer (2-3 sentences). markingGuide: explicit mark breakdown."
@@ -1529,9 +1729,9 @@ Respond ONLY with a valid JSON array:
                 "- Format `\"question\"` strictly as: `\"Assertion (A): <statement>\\nReason (R): <statement>\"`, and ALSO provide `\"assertion\"` and `\"reason\"` fields.\n"
                 "- Distribute `\"correctAnswer\"` across ALL FIVE cases (`\"A\"`, `\"B\"`, `\"C\"`, `\"D\"`, `\"E\"`):\n"
                 "  * Case A: Both A and R are true, and R is the direct causal/mechanistic explanation of A.\n"
-                "  * Case B: Both A and R are true independent statements from the slides, but R does NOT explain why A occurs.\n"
+                "  * Case B: Both A and R are true independent statements, but R does NOT explain why A occurs.\n"
                 "  * Case C: A is true, but R contains a subtle factual or causal falsehood.\n"
-                "  * Case D: A states a plausible misconception (false), whereas R states a true principle from the slides.\n"
+                "  * Case D: A states a plausible misconception (false), whereas R states a true principle.\n"
                 "  * Case E: Both A and R state plausible misconceptions (both false)."
             )
         elif question_type in ("mixed", "exhaustive"):
@@ -1556,10 +1756,12 @@ Respond ONLY with a valid JSON array:
         system = f"""You are LAMLA Guide AI's Precision Examination Engine.
 Difficulty: {difficulty}. Question Type: {question_type}.{weak_focus_prompt}{slide_plan_prompt}
 
-QUALITY & ANTI-REPETITION RULES:
-1. Write clear, unambiguous, university/WASSCE-standard questions testing real understanding, mechanisms, applications, and key distinctions.
-2. NEVER repeat or slightly reword the same question or correct answer. Each question must test a completely distinct fact or concept and use varied academic question stems.
-3. Keep explanations sharp and helpful (1–2 sentences) plus 1 sentence for `misconception` and exact `sourceRef` (e.g. `"Found in: Slide 3"`).
+STRICT QUALITY, MAIN-TOPIC & NO-SLIDE-NUMBER RULES:
+1. Write clear, unambiguous, university/WASSCE-standard questions testing real understanding, mechanisms, applications, and key distinctions of the MAIN ACADEMIC TOPIC.
+2. NEVER mention slide numbers or page numbers anywhere! Do NOT write "on Slide 3", "(Slide 2)", "according to Slide 5", or "Found in: Slide 1" in the question stem, Assertion, Reason, options, or explanation. Questions must read like standalone real examination questions.
+3. Ignore any introductory cover/title metadata about the school, university, faculty, department, course code, lecturer name, or table of contents.
+4. NEVER repeat or slightly reword the same question or correct answer. Each question must test a completely distinct fact or concept and use varied academic question stems.
+5. Keep explanations sharp and helpful (1–2 sentences) plus 1 sentence for `misconception`.
 
 {type_instruct}
 
@@ -1567,7 +1769,7 @@ Return ONLY a valid JSON array of {count} objects:
 [
   {{
     "id": {start_index},
-    "question": "Clear, specific exam question (or Assertion (A): ...\\nReason (R): ...)",
+    "question": "Clear, specific standalone exam question without any slide number reference",
     "assertion": "Optional: Assertion (A) statement if assertion_reasoning",
     "reason": "Optional: Reason (R) statement if assertion_reasoning",
     "type": {type_schema_val},
@@ -1576,14 +1778,14 @@ Return ONLY a valid JSON array of {count} objects:
     "markingGuide": "",
     "explanation": "Why the correct option is accurate...",
     "misconception": "Why the main distractor is a common trap...",
-    "testedFact": "Exact slide principle tested",
-    "topic": "Slide topic",
+    "testedFact": "Core principle tested",
+    "topic": "Specific concept topic",
     "difficulty": "{difficulty}",
-    "sourceRef": "Found in: Slide 1"
+    "sourceRef": ""
   }}
 ]"""
 
-        prompt = f"Generate exactly {count} distinct, non-repeating {difficulty} questions starting at ID {start_index} from these slides:\n\n{content}"
+        prompt = f"Generate exactly {count} distinct, non-repeating {difficulty} exam questions starting at ID {start_index} from this academic material (do NOT include slide numbers in questions):\n\n{content}"
         raw = self.execute_ai_completion(prompt, system_prompt=system, json_mode=True, temperature=0.25, use_cache=False)
         parsed = self._clean_json_response(raw)
         if isinstance(parsed, list):
@@ -1600,18 +1802,20 @@ Return ONLY a valid JSON array of {count} objects:
     ) -> List[Dict[str, Any]]:
         """
         Ultra-fast parallel quiz generator with:
-        - Explicit per-slide question allocation so questions come from EVERY SINGLE PAGE/SLIDE
-        - Concurrent ThreadPoolExecutor batching across slide groups (finishes 30–50 Qs in seconds)
+        - Automatic filtering of institutional/school/department intro slides
+        - Explicit per-slide question allocation so questions come from EVERY SINGLE SUBSTANTIVE SLIDE
+        - Zero slide-number references in the output questions
         - Strict stem + token-similarity + tested-fact deduplication guaranteeing ZERO repeated questions
         """
         target_count = min(max(int(count or 5), 1), 1000)
-        slides = self._parse_individual_slides(content)
+        raw_slides = self._parse_individual_slides(content)
+        slides = self._filter_substantive_slides(raw_slides)
         if not slides:
             return []
 
         num_slides = len(slides)
 
-        # Allocate exact question quotas across slides so EVERY slide is represented
+        # Allocate exact question quotas across substantive slides so EVERY slide is represented
         slide_quotas: List[Tuple[Dict[str, Any], int]] = []
         if target_count >= num_slides:
             base_q = target_count // num_slides
@@ -1620,8 +1824,6 @@ Return ONLY a valid JSON array of {count} objects:
                 q_for_slide = base_q + (1 if idx < rem_q else 0)
                 slide_quotas.append((sl, q_for_slide))
         else:
-            # When target_count < num_slides, partition all slides into target_count contiguous groups
-            # so every single region/page of the deck is sampled evenly from first slide to last slide!
             selected_indices = [
                 min(num_slides - 1, int(round(i * (num_slides - 1) / max(1, target_count - 1))))
                 for i in range(target_count)
@@ -1646,7 +1848,7 @@ Return ONLY a valid JSON array of {count} objects:
                 curr_plan_lines = []
             curr_items.append((sl, q_alloc))
             curr_q_sum += q_alloc
-            curr_plan_lines.append(f"- {sl['label']} ({sl['title']}): {q_alloc} question(s)")
+            curr_plan_lines.append(f"- Topic '{sl['title']}': {q_alloc} question(s)")
 
         if curr_items and curr_q_sum > 0:
             batches.append((curr_items, curr_q_sum, "\n".join(curr_plan_lines)))
@@ -1672,6 +1874,13 @@ Return ONLY a valid JSON array of {count} objects:
                     per_slide_plan=b_plan,
                 )
                 if generated:
+                    # Tag generated questions with the batch's slide numbers in order for internal coverage tracking
+                    expanded_slide_nums: List[int] = []
+                    for sl_item, q_alloc in b_items:
+                        expanded_slide_nums.extend([sl_item["num"]] * max(1, q_alloc))
+                    for g_idx, g_q in enumerate(generated):
+                        if not g_q.get("_slide_num") and expanded_slide_nums:
+                            g_q["_slide_num"] = expanded_slide_nums[min(g_idx, len(expanded_slide_nums) - 1)]
                     return generated
             except Exception:
                 pass
@@ -1704,64 +1913,34 @@ Return ONLY a valid JSON array of {count} objects:
 
         unique_questions = self._deduplicate_questions(all_raw_questions)
 
-        # Verify EVERY SINGLE SLIDE has at least 1 question when target_count >= num_slides
+        # Verify EVERY SINGLE SUBSTANTIVE SLIDE has at least 1 question when target_count >= num_slides
         if target_count >= num_slides:
             covered_nums = set()
             for q in unique_questions:
-                ref_str = f"{q.get('sourceRef', '')} {q.get('topic', '')} {q.get('question', '')}"
-                for m in re.finditer(r"\b(?:Slide|Page)\s*(\d+)\b", ref_str, re.IGNORECASE):
-                    covered_nums.add(int(m.group(1)))
+                if q.get("_slide_num"):
+                    covered_nums.add(int(q["_slide_num"]))
 
             missing_slides = [sl for sl in slides if sl["num"] not in covered_nums]
             if missing_slides:
-                # Top up missing slides in one compact batch (or deterministic per-slide synthesis)
-                if len(missing_slides) <= 12:
-                    miss_content = "\n\n".join(s["full"] for s in missing_slides)
-                    miss_plan = "\n".join(f"- {s['label']} ({s['title']}): 1 question" for s in missing_slides)
-                    try:
-                        topup = self._generate_quiz_batch(
-                            content=miss_content,
-                            count=len(missing_slides),
-                            difficulty=difficulty,
-                            question_type=question_type,
-                            start_index=len(unique_questions) + 1,
-                            per_slide_plan=miss_plan,
-                        )
-                        unique_questions = self._deduplicate_questions(unique_questions + topup)
-                    except Exception:
-                        pass
-
-                # Re-check and guarantee 100% coverage for any still-missing slide
-                covered_after = set()
-                for q in unique_questions:
-                    ref_str = f"{q.get('sourceRef', '')} {q.get('topic', '')} {q.get('question', '')}"
-                    for m in re.finditer(r"\b(?:Slide|Page)\s*(\d+)\b", ref_str, re.IGNORECASE):
-                        covered_after.add(int(m.group(1)))
-
-                still_missing = [sl for sl in slides if sl["num"] not in covered_after]
-                if still_missing:
-                    guaranteed_extras = [
-                        self._deterministic_question_from_slide(sl, slides, idx + 1, question_type)
-                        for idx, sl in enumerate(still_missing)
-                    ]
-                    # Keep at least 1 question per slide first, then fill remaining slots up to target_count
-                    if len(unique_questions) + len(guaranteed_extras) > target_count:
-                        # Trim extra questions from slides that already had >1 question so every slide stays covered
-                        seen_slide_once = set()
-                        primary_per_slide = []
-                        overflow_qs = []
-                        for q in unique_questions:
-                            m = re.search(r"\b(?:Slide|Page)\s*(\d+)\b", str(q.get("sourceRef", "")), re.IGNORECASE)
-                            s_no = int(m.group(1)) if m else None
-                            if s_no is not None and s_no not in seen_slide_once:
-                                seen_slide_once.add(s_no)
-                                primary_per_slide.append(q)
-                            else:
-                                overflow_qs.append(q)
-                        combined = primary_per_slide + guaranteed_extras + overflow_qs
-                        unique_questions = self._deduplicate_questions(combined)[:target_count]
-                    else:
-                        unique_questions = self._deduplicate_questions(unique_questions + guaranteed_extras)
+                guaranteed_extras = [
+                    self._deterministic_question_from_slide(sl, slides, idx + 1, question_type)
+                    for idx, sl in enumerate(missing_slides)
+                ]
+                if len(unique_questions) + len(guaranteed_extras) > target_count:
+                    seen_slide_once = set()
+                    primary_per_slide = []
+                    overflow_qs = []
+                    for q in unique_questions:
+                        s_no = q.get("_slide_num")
+                        if s_no is not None and s_no not in seen_slide_once:
+                            seen_slide_once.add(s_no)
+                            primary_per_slide.append(q)
+                        else:
+                            overflow_qs.append(q)
+                    combined = primary_per_slide + guaranteed_extras + overflow_qs
+                    unique_questions = self._deduplicate_questions(combined)[:target_count]
+                else:
+                    unique_questions = self._deduplicate_questions(unique_questions + guaranteed_extras)
 
         # Final top-up if deduplication left us slightly short of target_count
         if len(unique_questions) < target_count:
@@ -1776,6 +1955,8 @@ Return ONLY a valid JSON array of {count} objects:
         final_list = unique_questions[:target_count]
         for idx, q in enumerate(final_list, 1):
             q["id"] = idx
+            q["sourceRef"] = ""
+            q.pop("_slide_num", None)
         return final_list
 
     # ─────────────────────────────────────────────────────────────

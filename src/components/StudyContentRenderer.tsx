@@ -19,6 +19,7 @@ import {
   SafeSvgDiagram,
   normalizeInlineSvgBlocks,
 } from "@/components/VisualMarkdown";
+import FastScrollHandle from "@/components/FastScrollHandle";
 
 interface StudyContentRendererProps {
   content: string;
@@ -37,6 +38,7 @@ export default function StudyContentRenderer({
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [fontSize, setFontSize] = useState<"normal" | "large" | "compact">("normal");
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
   const { playTrack, playSection, session, isPlaying, pause, getSavedBookmark } = useAudioPlayer();
 
@@ -212,194 +214,201 @@ export default function StudyContentRenderer({
           </div>
         </div>
 
-        {/* Content Body */}
-        <div
-          onWheel={handleUserManualScroll}
-          onTouchMove={handleUserManualScroll}
-          className={`p-6 sm:p-10 text-slate-800 dark:text-slate-200 ${fontClass}`}
-        >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              h1: ({ children }) => {
-                const headingText = getNodeText(children);
-                return (
-                  <div className="group flex items-baseline justify-between gap-3 mt-8 first:mt-0 mb-4 border-b border-slate-200 dark:border-slate-800 pb-3">
-                    <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-                      {children}
-                    </h1>
-                    {headingText && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          playSection(
-                            title || "Study Section",
-                            headingText,
-                            extractSectionText(headingText)
-                          )
-                        }
-                        className="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 hover:text-blue-600 text-xs font-medium inline-flex items-center gap-1 shrink-0 print:hidden"
-                      >
-                        <Volume2 className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Listen</span>
-                      </button>
-                    )}
-                  </div>
-                );
-              },
-              h2: ({ children }) => {
-                const headingText = getNodeText(children);
-                return (
-                  <div className="group flex items-baseline justify-between gap-3 mt-8 mb-3">
-                    <h2 className="text-lg sm:text-xl font-semibold text-slate-900 dark:text-slate-100 tracking-tight">
-                      {children}
-                    </h2>
-                    {headingText && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          playSection(
-                            title || "Study Topic",
-                            headingText,
-                            extractSectionText(headingText)
-                          )
-                        }
-                        className="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 hover:text-blue-600 text-xs font-medium inline-flex items-center gap-1 shrink-0 print:hidden"
-                      >
-                        <Volume2 className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Listen</span>
-                      </button>
-                    )}
-                  </div>
-                );
-              },
-              h3: ({ children }) => (
-                <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mt-6 mb-2.5">
-                  {children}
-                </h3>
-              ),
-              p: ({ children }) => {
-                const pText = getNodeText(children);
-                const currentChunk =
-                  isCurrentAudioActive && session && session.currentChunkIndex !== undefined && session.chunks
-                    ? session.chunks[session.currentChunkIndex]
-                    : null;
+        {/* Content Body + Draggable Fast-Scroll Handle */}
+        <div className="relative">
+          <div className="sticky top-24 float-right mr-2 sm:mr-4 mt-4 z-30">
+            <FastScrollHandle scrollContainerRef={scrollContainerRef} label="Summary Fast Scroll" />
+          </div>
 
-                const isSpeakingThis = !!(
-                  currentChunk &&
-                  pText &&
-                  (pText.trim().toLowerCase().includes(currentChunk.rawText.trim().toLowerCase().slice(0, 30)) ||
-                    currentChunk.rawText.trim().toLowerCase().includes(pText.trim().toLowerCase().slice(0, 30)))
-                );
-
-                return (
-                  <ParagraphItem
-                    pText={pText}
-                    isSpeakingThis={isSpeakingThis}
-                    chunks={chunks}
-                    effectiveTitle={effectiveTitle}
-                    sourceType={sourceType}
-                    content={content}
-                    playTrack={playTrack}
-                    userScrolledRef={userScrolledRef}
-                  >
-                    {children}
-                  </ParagraphItem>
-                );
-              },
-              strong: ({ children }) => (
-                <strong className="font-semibold text-slate-950 dark:text-white">
-                  {children}
-                </strong>
-              ),
-              ul: ({ children }) => (
-                <ul className="list-disc list-outside ml-5 space-y-2.5 my-4 text-slate-700 dark:text-slate-300">
-                  {children}
-                </ul>
-              ),
-              ol: ({ children }) => (
-                <ol className="list-decimal list-outside ml-5 space-y-2.5 my-4 text-slate-700 dark:text-slate-300">
-                  {children}
-                </ol>
-              ),
-              li: ({ children }) => (
-                <li className="leading-[1.8] text-slate-700 dark:text-slate-300 pl-1">
-                  {children}
-                </li>
-              ),
-              table: ({ children }) => (
-                <div
-                  className="table-wrapper overflow-x-auto my-6 rounded-xl border border-slate-200 dark:border-slate-800"
-                  tabIndex={0}
-                  role="region"
-                  aria-label="Study comparison table"
-                >
-                  <table className="w-full text-left border-collapse text-sm">
-                    {children}
-                  </table>
-                </div>
-              ),
-              thead: ({ children }) => (
-                <thead className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
-                  {children}
-                </thead>
-              ),
-              th: ({ children }) => (
-                <th scope="col" className="p-3 font-semibold text-slate-800 dark:text-slate-200 text-xs">
-                  {children}
-                </th>
-              ),
-              td: ({ children }) => (
-                <td className="p-3 border-b border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 leading-relaxed">
-                  {children}
-                </td>
-              ),
-              blockquote: ({ children }) => (
-                <blockquote className="my-5 border-l-3 border-blue-600 bg-slate-50 dark:bg-slate-800/60 py-3 px-4 rounded-r-xl text-slate-700 dark:text-slate-300">
-                  {children}
-                </blockquote>
-              ),
-              pre: ({ children }: any) => {
-                const childElem = React.isValidElement(children) ? children : null;
-                const childProps = (childElem?.props as any) || {};
-                const className = String(childProps.className || "");
-                const rawContent = String(childProps.children || "").trim();
-
-                const isSvg =
-                  className.includes("language-svg") ||
-                  (rawContent.startsWith("<svg") && rawContent.includes("</svg>"));
-
-                if (isSvg) {
-                  return <SafeSvgDiagram rawSvg={rawContent} />;
-                }
-
-                return (
-                  <div className="my-5 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950">
-                    <pre className="p-4 overflow-x-auto font-mono text-xs sm:text-sm leading-relaxed text-slate-800 dark:text-slate-200">
-                      {children}
-                    </pre>
-                  </div>
-                );
-              },
-              code: ({ children, className }: any) => {
-                const isInline = !className && typeof children === "string" && !children.includes("\n");
-                if (isInline) {
-                  return (
-                    <code className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs">
-                      {children}
-                    </code>
-                  );
-                }
-                return <code className="font-mono text-xs sm:text-sm">{children}</code>;
-              },
-              img: ({ src, alt }: any) => (
-                <SafeEducationalImage src={typeof src === "string" ? src : undefined} alt={alt} />
-              ),
-              hr: () => <hr className="my-7 border-slate-200 dark:border-slate-800" />,
-            }}
+          <div
+            ref={scrollContainerRef}
+            onWheel={handleUserManualScroll}
+            onTouchMove={handleUserManualScroll}
+            className={`p-6 sm:p-10 pr-14 sm:pr-16 max-h-[78vh] overflow-y-auto text-slate-800 dark:text-slate-200 ${fontClass}`}
           >
-            {normalizeInlineSvgBlocks(content)}
-          </ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h1: ({ children }) => {
+                  const headingText = getNodeText(children);
+                  return (
+                    <div className="group flex items-baseline justify-between gap-3 mt-10 first:mt-0 mb-5 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+                      <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+                        {children}
+                      </h1>
+                      {headingText && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            playSection(
+                              title || "Study Section",
+                              headingText,
+                              extractSectionText(headingText)
+                            )
+                          }
+                          className="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 hover:text-blue-600 text-xs font-medium inline-flex items-center gap-1 shrink-0 print:hidden"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Listen</span>
+                        </button>
+                      )}
+                    </div>
+                  );
+                },
+                h2: ({ children }) => {
+                  const headingText = getNodeText(children);
+                  return (
+                    <div className="group flex items-baseline justify-between gap-3 mt-10 mb-4 pt-3 border-t border-slate-100 dark:border-slate-800/70">
+                      <h2 className="text-lg sm:text-xl font-semibold text-slate-900 dark:text-slate-100 tracking-tight">
+                        {children}
+                      </h2>
+                      {headingText && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            playSection(
+                              title || "Study Topic",
+                              headingText,
+                              extractSectionText(headingText)
+                            )
+                          }
+                          className="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 hover:text-blue-600 text-xs font-medium inline-flex items-center gap-1 shrink-0 print:hidden"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Listen</span>
+                        </button>
+                      )}
+                    </div>
+                  );
+                },
+                h3: ({ children }) => (
+                  <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mt-7 mb-3">
+                    {children}
+                  </h3>
+                ),
+                p: ({ children }) => {
+                  const pText = getNodeText(children);
+                  const currentChunk =
+                    isCurrentAudioActive && session && session.currentChunkIndex !== undefined && session.chunks
+                      ? session.chunks[session.currentChunkIndex]
+                      : null;
+
+                  const isSpeakingThis = !!(
+                    currentChunk &&
+                    pText &&
+                    (pText.trim().toLowerCase().includes(currentChunk.rawText.trim().toLowerCase().slice(0, 30)) ||
+                      currentChunk.rawText.trim().toLowerCase().includes(pText.trim().toLowerCase().slice(0, 30)))
+                  );
+
+                  return (
+                    <ParagraphItem
+                      pText={pText}
+                      isSpeakingThis={isSpeakingThis}
+                      chunks={chunks}
+                      effectiveTitle={effectiveTitle}
+                      sourceType={sourceType}
+                      content={content}
+                      playTrack={playTrack}
+                      userScrolledRef={userScrolledRef}
+                    >
+                      {children}
+                    </ParagraphItem>
+                  );
+                },
+                strong: ({ children }) => (
+                  <strong className="font-semibold text-slate-950 dark:text-white">
+                    {children}
+                  </strong>
+                ),
+                ul: ({ children }) => (
+                  <ul className="list-disc list-outside ml-5 space-y-3.5 my-5 text-slate-700 dark:text-slate-300">
+                    {children}
+                  </ul>
+                ),
+                ol: ({ children }) => (
+                  <ol className="list-decimal list-outside ml-5 space-y-3.5 my-5 text-slate-700 dark:text-slate-300">
+                    {children}
+                  </ol>
+                ),
+                li: ({ children }) => (
+                  <li className="leading-[1.9] text-slate-700 dark:text-slate-300 pl-1.5">
+                    {children}
+                  </li>
+                ),
+                table: ({ children }) => (
+                  <div
+                    className="table-wrapper overflow-x-auto my-7 rounded-xl border border-slate-200 dark:border-slate-800"
+                    tabIndex={0}
+                    role="region"
+                    aria-label="Study comparison table"
+                  >
+                    <table className="w-full text-left border-collapse text-sm">
+                      {children}
+                    </table>
+                  </div>
+                ),
+                thead: ({ children }) => (
+                  <thead className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
+                    {children}
+                  </thead>
+                ),
+                th: ({ children }) => (
+                  <th scope="col" className="p-3.5 font-semibold text-slate-800 dark:text-slate-200 text-xs">
+                    {children}
+                  </th>
+                ),
+                td: ({ children }) => (
+                  <td className="p-3.5 border-b border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 leading-relaxed">
+                    {children}
+                  </td>
+                ),
+                blockquote: ({ children }) => (
+                  <blockquote className="my-6 border-l-3 border-blue-600 bg-slate-50 dark:bg-slate-800/60 py-3.5 px-5 rounded-r-xl text-slate-700 dark:text-slate-300">
+                    {children}
+                  </blockquote>
+                ),
+                pre: ({ children }: any) => {
+                  const childElem = React.isValidElement(children) ? children : null;
+                  const childProps = (childElem?.props as any) || {};
+                  const className = String(childProps.className || "");
+                  const rawContent = String(childProps.children || "").trim();
+
+                  const isSvg =
+                    className.includes("language-svg") ||
+                    (rawContent.startsWith("<svg") && rawContent.includes("</svg>"));
+
+                  if (isSvg) {
+                    return <SafeSvgDiagram rawSvg={rawContent} />;
+                  }
+
+                  return (
+                    <div className="my-6 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950">
+                      <pre className="p-4 overflow-x-auto font-mono text-xs sm:text-sm leading-relaxed text-slate-800 dark:text-slate-200">
+                        {children}
+                      </pre>
+                    </div>
+                  );
+                },
+                code: ({ children, className }: any) => {
+                  const isInline = !className && typeof children === "string" && !children.includes("\n");
+                  if (isInline) {
+                    return (
+                      <code className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs">
+                        {children}
+                      </code>
+                    );
+                  }
+                  return <code className="font-mono text-xs sm:text-sm">{children}</code>;
+                },
+                img: ({ src, alt }: any) => (
+                  <SafeEducationalImage src={typeof src === "string" ? src : undefined} alt={alt} />
+                ),
+                hr: () => <hr className="my-9 border-slate-200 dark:border-slate-800" />,
+              }}
+            >
+              {normalizeInlineSvgBlocks(content)}
+            </ReactMarkdown>
+          </div>
         </div>
       </div>
     </div>
@@ -456,13 +465,13 @@ function ParagraphItem({
   return (
     <div
       ref={elRef}
-      className={`group relative my-3.5 transition-colors rounded-lg ${
+      className={`group relative my-5 transition-colors rounded-lg ${
         isSpeakingThis
           ? "bg-blue-50/80 dark:bg-blue-950/30 border-l-3 border-blue-600 pl-3.5 pr-2 py-1"
           : ""
       }`}
     >
-      <p className="text-slate-800 dark:text-slate-200 leading-[1.8]">{children}</p>
+      <p className="text-slate-800 dark:text-slate-200 leading-[1.9]">{children}</p>
       {pText && pText.trim().length > 20 && (
         <button
           type="button"

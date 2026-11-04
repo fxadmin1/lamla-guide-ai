@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useAudioPlayer } from "@/contexts/AudioPlayerContext";
 import { SlideSegment } from "@/lib/utils";
+import FastScrollHandle from "@/components/FastScrollHandle";
 
 interface HeadingItem {
   id: string;
@@ -497,204 +498,212 @@ export default function SourceGroundedNotesWorkspace({
           </nav>
         </aside>
 
-        {/* Main Content */}
-        <div
-          ref={containerRef}
-          onScroll={handleScroll}
-          className="lg:col-span-8 xl:col-span-9 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-10 max-h-[82vh] overflow-y-auto"
-        >
-          <div className={`text-slate-800 dark:text-slate-200 ${fontClass}`}>
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h1: ({ children }) => {
-                  const headingText = typeof children === "string" ? children : String(children);
-                  const clean = headingText.replace(/[*_`]/g, "").trim();
-                  const targetH = headings.find((h) => h.title.includes(clean) || clean.includes(h.title));
-                  const id = targetH?.id || `heading-${clean.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+        {/* Main Content + Draggable Fast-Scroll Handle */}
+        <div className="lg:col-span-8 xl:col-span-9 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 relative overflow-hidden">
+          <div className="absolute right-2 sm:right-3.5 top-1/2 -translate-y-1/2 z-30">
+            <FastScrollHandle scrollContainerRef={containerRef} label="Detailed Notes Fast Scroll" />
+          </div>
 
-                  return (
-                    <div id={id} className="group mt-10 first:mt-0 mb-5 border-b border-slate-200 dark:border-slate-800 pb-3">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-                          {children}
-                        </h1>
-                        <button
-                          type="button"
-                          onClick={() => playSection(title, clean, getSectionContent(clean).text)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 hover:text-blue-600 text-xs font-medium inline-flex items-center gap-1.5 self-start shrink-0"
-                        >
-                          <Volume2 className="w-3.5 h-3.5" />
-                          <span>Listen</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                },
+          <div
+            ref={containerRef}
+            onScroll={handleScroll}
+            className="p-6 sm:p-10 pr-14 sm:pr-16 max-h-[82vh] overflow-y-auto"
+          >
+            <div className={`text-slate-800 dark:text-slate-200 ${fontClass}`}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: ({ children }) => {
+                    const headingText = typeof children === "string" ? children : String(children);
+                    const clean = headingText.replace(/[*_`]/g, "").trim();
+                    const targetH = headings.find((h) => h.title.includes(clean) || clean.includes(h.title));
+                    const id = targetH?.id || `heading-${clean.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
-                h2: ({ children }) => {
-                  const headingText = typeof children === "string" ? children : String(children);
-                  const clean = headingText.replace(/[*_`]/g, "").trim();
-                  const targetH = headings.find((h) => h.title.includes(clean) || clean.includes(h.title));
-                  const id = targetH?.id || `heading-${clean.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-                  const isRegenerating = regeneratingSectionId === clean;
-
-                  return (
-                    <div id={id} className="group mt-9 mb-4 pt-4 border-t border-slate-100 dark:border-slate-800">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <h2 className="text-xl font-semibold text-slate-900 dark:text-white tracking-tight">
-                          {children}
-                        </h2>
-
-                        <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity shrink-0">
+                    return (
+                      <div id={id} className="group mt-10 first:mt-0 mb-6 border-b border-slate-200 dark:border-slate-800 pb-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+                            {children}
+                          </h1>
                           <button
                             type="button"
                             onClick={() => playSection(title, clean, getSectionContent(clean).text)}
-                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-600 hover:text-blue-600 text-xs transition-colors"
-                            aria-label="Listen to section"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 hover:text-blue-600 text-xs font-medium inline-flex items-center gap-1.5 self-start shrink-0"
                           >
                             <Volume2 className="w-3.5 h-3.5" />
+                            <span>Listen</span>
                           </button>
+                        </div>
+                      </div>
+                    );
+                  },
 
-                          <button
-                            type="button"
-                            onClick={() => handleCopySection(clean)}
-                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-600 text-xs transition-colors"
-                            aria-label="Copy section"
-                          >
-                            {copiedSection === clean ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
+                  h2: ({ children }) => {
+                    const headingText = typeof children === "string" ? children : String(children);
+                    const clean = headingText.replace(/[*_`]/g, "").trim();
+                    const targetH = headings.find((h) => h.title.includes(clean) || clean.includes(h.title));
+                    const id = targetH?.id || `heading-${clean.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+                    const isRegenerating = regeneratingSectionId === clean;
 
-                          <div className="relative">
+                    return (
+                      <div id={id} className="group mt-12 mb-5 pt-6 border-t-2 border-slate-100 dark:border-slate-800">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <h2 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+                            {children}
+                          </h2>
+
+                          <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity shrink-0">
                             <button
                               type="button"
-                              disabled={isRegenerating}
-                              onClick={() =>
-                                setActiveRegenMenuHeading(activeRegenMenuHeading === clean ? null : clean)
-                              }
-                              className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-300 text-xs font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                              onClick={() => playSection(title, clean, getSectionContent(clean).text)}
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-600 hover:text-blue-600 text-xs transition-colors"
+                              aria-label="Listen to section"
                             >
-                              <RefreshCw className={`w-3 h-3 ${isRegenerating ? "animate-spin" : ""}`} />
-                              <span>{isRegenerating ? "Updating..." : "Rewrite"}</span>
+                              <Volume2 className="w-3.5 h-3.5" />
                             </button>
 
-                            {activeRegenMenuHeading === clean && (
-                              <div className="absolute right-0 top-full mt-1.5 w-56 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-lg p-1.5 z-30 space-y-0.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleRegenerateSection(clean, "standard_refresh")}
-                                  className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
-                                >
-                                  <span className="block font-medium">Clearer examples</span>
-                                  <span className="text-slate-500">Refresh structure and examples</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRegenerateSection(clean, "deeper_rigor")}
-                                  className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
-                                >
-                                  <span className="block font-medium">More exam detail</span>
-                                  <span className="text-slate-500">Deeper definitions and pitfalls</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRegenerateSection(clean, "simpler_analogy")}
-                                  className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
-                                >
-                                  <span className="block font-medium">Simpler explanation</span>
-                                  <span className="text-slate-500">Plain language and everyday analogy</span>
-                                </button>
-                              </div>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleCopySection(clean)}
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-600 text-xs transition-colors"
+                              aria-label="Copy section"
+                            >
+                              {copiedSection === clean ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+
+                            <div className="relative">
+                              <button
+                                type="button"
+                                disabled={isRegenerating}
+                                onClick={() =>
+                                  setActiveRegenMenuHeading(activeRegenMenuHeading === clean ? null : clean)
+                                }
+                                className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-300 text-xs font-medium inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                              >
+                                <RefreshCw className={`w-3 h-3 ${isRegenerating ? "animate-spin" : ""}`} />
+                                <span>{isRegenerating ? "Updating..." : "Rewrite"}</span>
+                              </button>
+
+                              {activeRegenMenuHeading === clean && (
+                                <div className="absolute right-0 top-full mt-1.5 w-56 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-lg p-1.5 z-30 space-y-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRegenerateSection(clean, "standard_refresh")}
+                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
+                                  >
+                                    <span className="block font-medium">Clearer examples</span>
+                                    <span className="text-slate-500">Refresh structure and examples</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRegenerateSection(clean, "deeper_rigor")}
+                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
+                                  >
+                                    <span className="block font-medium">More exam detail</span>
+                                    <span className="text-slate-500">Deeper definitions and pitfalls</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRegenerateSection(clean, "simpler_analogy")}
+                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200"
+                                  >
+                                    <span className="block font-medium">Simpler explanation</span>
+                                    <span className="text-slate-500">Plain language and everyday analogy</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                },
+                    );
+                  },
 
-                h3: ({ children }) => (
-                  <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mt-6 mb-2.5">
-                    {children}
-                  </h3>
-                ),
-
-                p: ({ children }) => {
-                  if (typeof children === "string") {
-                    return <p className="my-3.5 leading-[1.8]">{renderGroundedTextWithCitations(children)}</p>;
-                  }
-                  return <div className="my-3.5 leading-[1.8]">{children}</div>;
-                },
-
-                li: ({ children }) => {
-                  if (typeof children === "string") {
-                    return <li className="my-1.5 leading-[1.8]">{renderGroundedTextWithCitations(children)}</li>;
-                  }
-                  return <li className="my-1.5 leading-[1.8]">{children}</li>;
-                },
-
-                ul: ({ children }) => (
-                  <ul className="list-disc list-outside ml-5 space-y-1.5 my-4 text-slate-700 dark:text-slate-300">
-                    {children}
-                  </ul>
-                ),
-
-                ol: ({ children }) => (
-                  <ol className="list-decimal list-outside ml-5 space-y-1.5 my-4 text-slate-700 dark:text-slate-300">
-                    {children}
-                  </ol>
-                ),
-
-                table: ({ children }) => (
-                  <div
-                    className="table-wrapper overflow-x-auto my-6 rounded-xl border border-slate-200 dark:border-slate-800"
-                    tabIndex={0}
-                    role="region"
-                    aria-label="Notes table"
-                  >
-                    <table className="w-full text-left border-collapse text-sm">
+                  h3: ({ children }) => (
+                    <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200 mt-8 mb-3.5">
                       {children}
-                    </table>
-                  </div>
-                ),
+                    </h3>
+                  ),
 
-                thead: ({ children }) => (
-                  <thead className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-                    {children}
-                  </thead>
-                ),
+                  p: ({ children }) => {
+                    if (typeof children === "string") {
+                      return <p className="my-5 leading-[1.95]">{renderGroundedTextWithCitations(children)}</p>;
+                    }
+                    return <div className="my-5 leading-[1.95]">{children}</div>;
+                  },
 
-                th: ({ children }) => (
-                  <th scope="col" className="p-3 font-semibold text-slate-800 dark:text-slate-200 text-xs">
-                    {children}
-                  </th>
-                ),
+                  li: ({ children }) => {
+                    if (typeof children === "string") {
+                      return <li className="my-2.5 leading-[1.95] pl-1">{renderGroundedTextWithCitations(children)}</li>;
+                    }
+                    return <li className="my-2.5 leading-[1.95] pl-1">{children}</li>;
+                  },
 
-                td: ({ children }) => (
-                  <td className="p-3 border-b border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300">
-                    {children}
-                  </td>
-                ),
+                  ul: ({ children }) => (
+                    <ul className="list-disc list-outside ml-5 space-y-3.5 my-5 text-slate-700 dark:text-slate-300">
+                      {children}
+                    </ul>
+                  ),
 
-                blockquote: ({ children }) => (
-                  <blockquote className="my-5 border-l-3 border-blue-600 bg-slate-50 dark:bg-slate-800/60 py-3 px-4 rounded-r-xl text-slate-700 dark:text-slate-300">
-                    {children}
-                  </blockquote>
-                ),
+                  ol: ({ children }) => (
+                    <ol className="list-decimal list-outside ml-5 space-y-3.5 my-5 text-slate-700 dark:text-slate-300">
+                      {children}
+                    </ol>
+                  ),
 
-                strong: ({ children }) => (
-                  <strong className="font-semibold text-slate-950 dark:text-white">
-                    {children}
-                  </strong>
-                ),
-              }}
-            >
-              {displayedContent}
-            </ReactMarkdown>
+                  table: ({ children }) => (
+                    <div
+                      className="table-wrapper overflow-x-auto my-7 rounded-xl border border-slate-200 dark:border-slate-800"
+                      tabIndex={0}
+                      role="region"
+                      aria-label="Notes table"
+                    >
+                      <table className="w-full text-left border-collapse text-sm">
+                        {children}
+                      </table>
+                    </div>
+                  ),
+
+                  thead: ({ children }) => (
+                    <thead className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                      {children}
+                    </thead>
+                  ),
+
+                  th: ({ children }) => (
+                    <th scope="col" className="p-3.5 font-semibold text-slate-800 dark:text-slate-200 text-xs">
+                      {children}
+                    </th>
+                  ),
+
+                  td: ({ children }) => (
+                    <td className="p-3.5 border-b border-slate-100 dark:border-slate-800 text-slate-700 dark:text-slate-300 leading-relaxed">
+                      {children}
+                    </td>
+                  ),
+
+                  blockquote: ({ children }) => (
+                    <blockquote className="my-6 border-l-3 border-blue-600 bg-slate-50 dark:bg-slate-800/60 py-4 px-5 rounded-r-xl text-slate-700 dark:text-slate-300">
+                      {children}
+                    </blockquote>
+                  ),
+
+                  strong: ({ children }) => (
+                    <strong className="font-semibold text-slate-950 dark:text-white">
+                      {children}
+                    </strong>
+                  ),
+
+                  hr: () => <hr className="my-10 border-slate-200 dark:border-slate-800" />,
+                }}
+              >
+                {displayedContent}
+              </ReactMarkdown>
+            </div>
           </div>
         </div>
       </div>

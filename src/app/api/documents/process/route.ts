@@ -47,64 +47,19 @@ export async function POST(req: NextRequest) {
 
     const supabaseAdmin = supabaseServiceAdmin || authClient;
 
-    // 2. Enforce subscription plan limits (Basic/Free: 5, Standard: 25, Premium: UNLIMITED, Admin: UNLIMITED)
-    const { data: userProfile } = await supabaseAdmin
-      .from("profiles")
-      .select("plan_id, role")
-      .eq("id", user.id)
-      .single();
-
-    const userPlan = (userProfile?.plan_id || "free").toLowerCase();
-    const isAdmin = userProfile?.role === "admin";
-    const isPremium = userPlan === "premium" || isAdmin;
-
-    if (!isPremium) {
-      const planLimits: Record<string, number> = {
-        free: 5,
-        standard: 25,
-      };
-      const maxAllowed = planLimits[userPlan] ?? 5;
-
-      const { count: currentDocCount } = await supabaseAdmin
-        .from("documents")
-        .select("*", { count: "exact", head: true })
-        .eq("user_id", user.id);
-
-      if (typeof currentDocCount === "number" && currentDocCount >= maxAllowed) {
-        return NextResponse.json({
-          error: `Your ${userPlan.toUpperCase()} Plan limit of ${maxAllowed} study sessions has been reached (${currentDocCount}/${maxAllowed} used). Upgrade to Premium for UNLIMITED study sessions.`,
-          code: "UPGRADE_REQUIRED",
-          plan: userPlan,
-          limit: maxAllowed,
-          used: currentDocCount,
-        }, { status: 403 });
-      }
-    }
-
-    // 3. Parse multipart form data
+    // 2. Parse multipart form data (unlimited free access for all students)
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     const sessionTitle = (formData.get("title") as string)?.trim() || "";
     const selectedMode = (formData.get("mode") as string) || "summarize";
     const educationalLevel = (formData.get("educationalLevel") as string) || "Senior High School (SHS) & University";
     const requestedQuizCount = parseInt(formData.get("quizCount") as string, 10) || 5;
-    const maxAllowedQuestions = isPremium ? 200 : userPlan === "standard" ? 100 : 50;
-    const quizCount = Math.min(Math.max(requestedQuizCount, 1), maxAllowedQuestions);
+    const quizCount = Math.min(Math.max(requestedQuizCount, 1), 200);
 
     const flashcardCount = Math.min(Math.max(parseInt(formData.get("flashcardCount") as string, 10) || 20, 5), 200);
     const quizTimeLimit = parseInt(formData.get("quizTimeLimit") as string, 10) || 15;
     const quizType = (formData.get("quizType") as string) || "mcq";
     const quizDifficulty = (formData.get("quizDifficulty") as string) || "intermediate";
-
-    // Enforce feature restriction: Flashcards are restricted to Standard, Premium, and Admin
-    if (selectedMode === "flashcards" && userPlan === "free" && !isAdmin) {
-      return NextResponse.json({
-        error: "Flashcards with Spaced Repetition (Active Recall) are reserved for Standard, Premium, and Admin scholars. Upgrade to Standard or Premium to unlock interactive flashcard decks.",
-        code: "UPGRADE_REQUIRED_FLASHCARDS",
-        feature: "flashcards",
-        plan: userPlan,
-      }, { status: 403 });
-    }
 
     const PYTHON_API_URL = getPythonApiUrl();
     const pastedText = (formData.get("text") as string)?.trim() || "";
@@ -209,7 +164,8 @@ export async function POST(req: NextRequest) {
       key_concepts: structuredData?.key_concepts || [],
     };
 
-    // 5. Save Document record to Supabase (Row Level Security ensures user isolation)
+    // 5. Save Document record to Supabase (cap stored text size so 1 GB+ uploads never exceed DB row limits)
+    const safeDbText = extractedText.length > 450000 ? extractedText.slice(0, 450000) : extractedText;
     const { data: newDoc, error: docErr } = await supabaseAdmin
       .from("documents")
       .insert({
@@ -218,7 +174,7 @@ export async function POST(req: NextRequest) {
         file_type: filename.split(".").pop()?.toLowerCase() || "unknown",
         file_size_bytes: fileSize,
         slide_or_page_count: pageCount,
-        extracted_text: extractedText,
+        extracted_text: safeDbText,
         structured_data: compactMetadata,
         file_url: "ephemeral-extracted",
         processing_status: "completed",
@@ -270,7 +226,14 @@ export async function POST(req: NextRequest) {
         })
         .select()
         .single();
-      generatedSummary = s;
+      generatedSummary = s || {
+        id: `local-sum-${Date.now()}`,
+        document_id: newDoc.id,
+        user_id: user.id,
+        title: `${finalTitle} - Summary`,
+        content: summaryText,
+        style: "Exam-Oriented",
+      };
     } else if (selectedMode === "explain") {
       let explanationText = "";
       try {
@@ -299,7 +262,14 @@ export async function POST(req: NextRequest) {
         })
         .select()
         .single();
-      generatedExplanation = n;
+      generatedExplanation = n || {
+        id: `local-exp-${Date.now()}`,
+        document_id: newDoc.id,
+        user_id: user.id,
+        title: `${finalTitle} - Detailed Explanation`,
+        subject: "explanation",
+        content: explanationText,
+      };
     } else if (selectedMode === "notes") {
       let notesText = "";
       try {
@@ -328,7 +298,14 @@ export async function POST(req: NextRequest) {
         })
         .select()
         .single();
-      generatedNotes = n;
+      generatedNotes = n || {
+        id: `local-note-${Date.now()}`,
+        document_id: newDoc.id,
+        user_id: user.id,
+        title: `${finalTitle} - Study Notes`,
+        subject: "exam_notes",
+        content: notesText,
+      };
     } else if (selectedMode === "flashcards") {
       let cards: any[] = [];
       try {
@@ -358,20 +335,36 @@ export async function POST(req: NextRequest) {
           .select()
           .single();
 
-        if (deck) {
-          const formatted = cards.map((c: any) => ({
-            deck_id: deck.id,
-            front: c.front || "Concept",
-            back: c.back || "Answer",
-            slide_reference: c.slideRef || c.slide_reference || "",
-            mastery_level: 0,
-            next_review_at: new Date().toISOString(),
-          }));
-          const { data: insertedCards } = await supabaseAdmin
+        const deckId = deck?.id || `local-deck-${Date.now()}`;
+        const formatted = cards.map((c: any) => ({
+          deck_id: deckId,
+          front: c.front || c.question || "Concept",
+          back: c.back || c.answer || "Answer",
+          slide_reference: "",
+          mastery_level: 0,
+          next_review_at: new Date().toISOString(),
+        }));
+        if (deck?.id) {
+          const { data: insertedCards, error: cErr } = await supabaseAdmin
             .from("flashcards")
             .insert(formatted)
             .select();
-          generatedCards = insertedCards || formatted;
+          if (!cErr && insertedCards && insertedCards.length > 0) {
+            generatedCards = insertedCards;
+          } else {
+            const minFormatted = formatted.map((c: any) => ({
+              deck_id: deck.id,
+              front: c.front,
+              back: c.back,
+            }));
+            const { data: insertedMin } = await supabaseAdmin
+              .from("flashcards")
+              .insert(minFormatted)
+              .select();
+            generatedCards = insertedMin || formatted;
+          }
+        } else {
+          generatedCards = formatted;
         }
       }
     } else if (selectedMode === "quiz") {
@@ -416,7 +409,6 @@ export async function POST(req: NextRequest) {
             if (q.explanation) parts.push(String(q.explanation).trim());
             if (q.markingGuide) parts.push(`Marking Guide: ${String(q.markingGuide).trim()}`);
             if (q.misconception) parts.push(`Common Pitfall: ${String(q.misconception).trim()}`);
-            if (q.sourceRef) parts.push(`Source: ${String(q.sourceRef).trim()}`);
             return {
               quiz_id: qz.id,
               question_text: q.question,

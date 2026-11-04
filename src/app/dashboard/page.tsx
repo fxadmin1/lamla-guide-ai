@@ -315,14 +315,14 @@ export default function StudentDashboardPage() {
   const userRole = profile?.role || user?.user_metadata?.role || "student";
   const currentPlan = profile?.plan_id || "Free";
   const isAdmin = userRole === "admin";
-  const isFreePlan = currentPlan.toLowerCase() === "free";
-  const isStandardPlan = currentPlan.toLowerCase() === "standard";
-  const isPremiumPlan = currentPlan.toLowerCase() === "premium";
-  const isUnlimitedPlan = isAdmin || isPremiumPlan;
-  const planLimit = isUnlimitedPlan ? 999999 : isStandardPlan ? 25 : 5;
-  const isQuotaReached = !isUnlimitedPlan && sessions.length >= planLimit;
-  const canAccessFlashcards = isStandardPlan || isPremiumPlan || isAdmin;
-  const maxQuestionsAllowed = isUnlimitedPlan ? 200 : isStandardPlan ? 100 : 50;
+  const isFreePlan = false;
+  const isStandardPlan = true;
+  const isPremiumPlan = true;
+  const isUnlimitedPlan = true;
+  const planLimit = 999999;
+  const isQuotaReached = false;
+  const canAccessFlashcards = true;
+  const maxQuestionsAllowed = 200;
 
   // Generate Additional Resource Loading State (for active session)
   const [generatingResource, setGeneratingResource] = useState<string | null>(null);
@@ -1051,14 +1051,15 @@ export default function StudentDashboardPage() {
     customCount?: number
   ) => {
     if (!activeSession) return;
-    if (!user) {
-      alert("Please sign in to generate and save study resources.");
-      return;
-    }
     setGeneratingResource(resourceType);
 
     try {
       const educationalLevel = profile?.educational_level || "Senior High School (SHS) & University";
+      const sourceText =
+        (activeSession.extracted_text && activeSession.extracted_text.trim()) ||
+        activeSlides.map((s) => `--- Slide ${s.slideNumber}: ${s.title} ---\n${s.content}`).join("\n\n") ||
+        activeSession.title ||
+        "Core Academic Study Material";
 
       if (resourceType === "summary") {
         const res = await fetch("/api/ai", {
@@ -1066,37 +1067,47 @@ export default function StudentDashboardPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "summary",
-            content: activeSession.extracted_text,
+            content: sourceText,
             options: { style: "Exam-Oriented", educationalLevel },
           }),
         });
         const data = await res.json();
         if (!data.summary) throw new Error(data.error || "Failed to generate summary.");
 
-        const { data: s, error: sErr } = await supabase.from("summaries").insert({
+        let savedSummary: any = null;
+        if (user) {
+          const { data: s } = await supabase
+            .from("summaries")
+            .insert({
+              document_id: activeSession.id,
+              user_id: user.id,
+              title: `${activeSession.title} - Summary`,
+              content: data.summary,
+              style: "Exam-Oriented",
+            })
+            .select()
+            .single();
+          savedSummary = s;
+        }
+        const summaryObj = savedSummary || {
+          id: `local-sum-${Date.now()}`,
           document_id: activeSession.id,
-          user_id: user.id,
+          user_id: user?.id || "local",
           title: `${activeSession.title} - Summary`,
           content: data.summary,
           style: "Exam-Oriented",
-        }).select().single();
-        if (sErr) throw sErr;
-        if (s) setSummaries((prev) => [s, ...prev]);
+          created_at: new Date().toISOString(),
+        };
+        setSummaries((prev) => [summaryObj, ...prev]);
         setActiveTab("summary");
       } else if (resourceType === "flashcards") {
-        if (!canAccessFlashcards) {
-          setUpgradeReason("Flashcards with Spaced Repetition (Active Recall) are reserved for Standard, Premium, and Admin scholars. Upgrade to Standard or Premium to unlock interactive flip decks.");
-          setShowUpgradeModal(true);
-          setGeneratingResource(null);
-          return;
-        }
         const countToGenerate = customCount || flashcardGenerateCount || 20;
         const res = await fetch("/api/ai", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "flashcards",
-            content: activeSession.extracted_text,
+            content: sourceText,
             options: { count: countToGenerate },
           }),
         });
@@ -1105,35 +1116,74 @@ export default function StudentDashboardPage() {
           throw new Error(data.error || "No flashcards could be generated from this session.");
         }
 
-        const { data: deck, error: dErr } = await supabase.from("flashcard_decks").insert({
-          document_id: activeSession.id,
-          user_id: user.id,
-          title: `${activeSession.title} - Flashcards`,
-          card_count: data.flashcards.length,
-        }).select().single();
-        if (dErr) throw dErr;
+        let deckObj: any = null;
+        if (user) {
+          const { data: deck } = await supabase
+            .from("flashcard_decks")
+            .insert({
+              document_id: activeSession.id,
+              user_id: user.id,
+              title: `${activeSession.title} - Flashcards`,
+              card_count: data.flashcards.length,
+            })
+            .select()
+            .single();
+          deckObj = deck;
+        }
 
-        if (deck) {
-          const formatted = data.flashcards.map((c: any) => ({
-            deck_id: deck.id,
-            front: c.front,
-            back: c.back,
-            slide_reference: c.slideRef || c.slide_reference || "",
-            mastery_level: 0,
-            next_review_at: new Date().toISOString(),
-          }));
-          const { data: insertedCards, error: cardsErr } = await supabase
+        if (!deckObj) {
+          deckObj = {
+            id: `local-deck-${Date.now()}`,
+            document_id: activeSession.id,
+            user_id: user?.id || "local",
+            title: `${activeSession.title} - Flashcards`,
+            card_count: data.flashcards.length,
+            created_at: new Date().toISOString(),
+          };
+        }
+
+        const formattedFull = data.flashcards.map((c: any, idx: number) => ({
+          id: `local-card-${Date.now()}-${idx}`,
+          deck_id: deckObj.id,
+          front: c.front || c.question || `Concept ${idx + 1}`,
+          back: c.back || c.answer || "",
+          slide_reference: "",
+          mastery_level: 0,
+          next_review_at: new Date().toISOString(),
+        }));
+
+        let savedCards: any[] | null = null;
+        if (user && !String(deckObj.id).startsWith("local-")) {
+          const fullPayload = formattedFull.map(({ id, ...rest }: any) => rest);
+          const { data: insertedFull, error: cardsErr } = await supabase
             .from("flashcards")
-            .insert(formatted)
+            .insert(fullPayload)
             .select();
-          if (cardsErr) throw cardsErr;
-          setFlashcardDecks((prev) => [deck, ...prev]);
-          if (insertedCards) {
-            setFlashcards((prev) => [...insertedCards, ...prev]);
+
+          if (!cardsErr && insertedFull && insertedFull.length > 0) {
+            savedCards = insertedFull;
           } else {
-            setFlashcards((prev) => [...formatted, ...prev]);
+            // Fallback to minimal schema columns (deck_id, front, back)
+            const minimalPayload = formattedFull.map((c: any) => ({
+              deck_id: deckObj.id,
+              front: c.front,
+              back: c.back,
+            }));
+            const { data: insertedMin } = await supabase
+              .from("flashcards")
+              .insert(minimalPayload)
+              .select();
+            if (insertedMin && insertedMin.length > 0) {
+              savedCards = insertedMin;
+            }
           }
         }
+
+        setFlashcardDecks((prev) => [deckObj, ...prev]);
+        setFlashcards((prev) => [...(savedCards || formattedFull), ...prev]);
+        setCurrentCardIndex(0);
+        setIsFlipped(false);
+        setDeckCompleted(false);
         setActiveTab("flashcards");
       } else if (resourceType === "notes") {
         const res = await fetch("/api/ai", {
@@ -1141,22 +1191,38 @@ export default function StudentDashboardPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "notes",
-            content: activeSession.extracted_text,
+            content: sourceText,
             options: { subject: activeSession.title, educationalLevel },
           }),
         });
         const data = await res.json();
         if (!data.notes) throw new Error(data.error || "Failed to generate detailed notes.");
 
-        const { data: noteRow, error: nErr } = await supabase.from("study_notes").insert({
+        let savedNote: any = null;
+        if (user) {
+          const { data: noteRow } = await supabase
+            .from("study_notes")
+            .insert({
+              document_id: activeSession.id,
+              user_id: user.id,
+              title: `${activeSession.title} - Detailed Notes`,
+              content: data.notes,
+              subject: "exam_notes",
+            })
+            .select()
+            .single();
+          savedNote = noteRow;
+        }
+        const noteObj = savedNote || {
+          id: `local-note-${Date.now()}`,
           document_id: activeSession.id,
-          user_id: user.id,
+          user_id: user?.id || "local",
           title: `${activeSession.title} - Detailed Notes`,
           content: data.notes,
           subject: "exam_notes",
-        }).select().single();
-        if (nErr) throw nErr;
-        if (noteRow) setStudyNotes((prev) => [noteRow, ...prev]);
+          created_at: new Date().toISOString(),
+        };
+        setStudyNotes((prev) => [noteObj, ...prev]);
         setActiveTab("notes");
       }
     } catch (err: any) {
@@ -1356,12 +1422,10 @@ export default function StudentDashboardPage() {
       if (newQuiz) {
         const formatted = distinctQuestions.map((q: any, i: number) => {
           const insight = q.examiner_insight || q.misconception_tip || q.misconception || "";
-          const slideRef = q.slide_reference || q.slideRef || q.sourceRef || slideRangeTitle;
           const testedFact = q.testedFact || q.tested_fact || "";
           let fullExp = q.explanation || "";
           if (testedFact) fullExp += `\n\n🎯 Tested Fact: ${testedFact}`;
           if (insight) fullExp += `\n\n💡 Examiner Insight: ${insight}`;
-          if (slideRef) fullExp += `\n\n📌 Slide Reference: ${slideRef}`;
 
           const qType = q.type || (q.options?.length === 2 ? "true_false" : q.options?.length === 5 ? "assertion_reasoning" : "mcq");
 
@@ -1373,7 +1437,7 @@ export default function StudentDashboardPage() {
             correct_answer: q.correctAnswer || "",
             explanation: fullExp.trim(),
             examiner_insight: insight,
-            slide_reference: slideRef,
+            slide_reference: "",
             assertion: q.assertion || "",
             reason: q.reason || "",
             order_index: i,
@@ -1574,7 +1638,6 @@ export default function StudentDashboardPage() {
         let exp = q.explanation || "";
         if (q.markingGuide) exp += `\n\nMarking Guide: ${q.markingGuide}`;
         if (q.misconception) exp += `\n\nCommon Pitfall: ${q.misconception}`;
-        if (q.sourceRef) exp += `\n\nSource: ${q.sourceRef}`;
 
         return {
           quiz_id: newQuiz.id,
@@ -3298,9 +3361,6 @@ export default function StudentDashboardPage() {
                                   {/* Question Meta Header */}
                                   <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 flex-wrap gap-2">
                                     <div className="flex items-center gap-2 flex-wrap">
-                                      <span className="text-xs font-medium px-2.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800">
-                                        {currentQ.slide_reference || currentQ.slideRef || "Slide question"}
-                                      </span>
                                       <span className="text-xs font-medium px-2.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                                         {formatQuestionTypeLabel(currentQ.question_type)}
                                       </span>
@@ -3325,19 +3385,19 @@ export default function StudentDashboardPage() {
                                       <div className="flex items-start gap-2.5">
                                         <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 font-semibold text-xs shrink-0">Assertion</span>
                                         <p className="text-sm sm:text-base font-medium text-slate-900 dark:text-slate-100 leading-relaxed">
-                                          {currentQ.assertion || (currentQ.question_text?.includes("Assertion (A):") ? currentQ.question_text.split(/\nReason \(R\):/i)[0]?.replace(/^Assertion \(A\):\s*/i, "").trim() : currentQ.question_text || currentQ.question)}
+                                          {String(currentQ.assertion || (currentQ.question_text?.includes("Assertion (A):") ? currentQ.question_text.split(/\nReason \(R\):/i)[0]?.replace(/^Assertion \(A\):\s*/i, "").trim() : currentQ.question_text || currentQ.question) || "").replace(/\s*\((?:Slide|Page)\s*#?\s*\d+[^)]*\)/gi, "")}
                                         </p>
                                       </div>
                                       <div className="flex items-start gap-2.5">
                                         <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 font-semibold text-xs shrink-0">Reason</span>
                                         <p className="text-sm sm:text-base font-medium text-slate-900 dark:text-slate-100 leading-relaxed">
-                                          {currentQ.reason || (currentQ.question_text?.includes("Reason (R):") ? currentQ.question_text.split(/\nReason \(R\):/i)[1]?.trim() : "")}
+                                          {String(currentQ.reason || (currentQ.question_text?.includes("Reason (R):") ? currentQ.question_text.split(/\nReason \(R\):/i)[1]?.trim() : "") || "").replace(/\s*\((?:Slide|Page)\s*#?\s*\d+[^)]*\)/gi, "")}
                                         </p>
                                       </div>
                                     </div>
                                   ) : (
                                     <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white leading-snug">
-                                      {currentQ.question_text || currentQ.question}
+                                      {String(currentQ.question_text || currentQ.question || "").replace(/\s*\((?:Slide|Page)\s*#?\s*\d+[^)]*\)/gi, "").replace(/\b(?:on|in|from|according to)\s+(?:Slide|Page)\s*#?\s*\d+\b,?\s*/gi, "")}
                                     </h3>
                                   )}
 
@@ -4068,17 +4128,12 @@ export default function StudentDashboardPage() {
                           return (
                             <div className="space-y-5">
                               <div className="space-y-2">
-                                {(q.source_reference || q.sourceRef) && (
-                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                                    {q.source_reference || q.sourceRef}
-                                  </span>
-                                )}
                                 {(q.question_type === "assertion_reasoning" || q.type === "assertion_reasoning") ? (
                                   (() => {
                                     const rawQ = String(q.question_text || q.question || "").trim();
                                     const mAr = rawQ.match(/(?:Assertion\s*(?:\(A\))?\s*[:\-]\s*)([\s\S]+?)\s*(?:\n+|\s+)(?:Reason\s*(?:\(R\))?\s*[:\-]\s*)([\s\S]+)/i);
-                                    const parsedA = q.assertion || (mAr ? mAr[1].trim() : rawQ);
-                                    const parsedR = q.reason || (mAr ? mAr[2].trim() : "");
+                                    const parsedA = String(q.assertion || (mAr ? mAr[1].trim() : rawQ)).replace(/\s*\((?:Slide|Page)\s*#?\s*\d+[^)]*\)/gi, "");
+                                    const parsedR = String(q.reason || (mAr ? mAr[2].trim() : "")).replace(/\s*\((?:Slide|Page)\s*#?\s*\d+[^)]*\)/gi, "");
                                     return (
                                       <div className="space-y-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
                                         <p className="text-xs font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">
@@ -4107,7 +4162,7 @@ export default function StudentDashboardPage() {
                                   })()
                                 ) : (
                                   <p className="text-base sm:text-lg font-bold text-slate-900 dark:text-white leading-snug">
-                                    {q.question_text || q.question}
+                                    {String(q.question_text || q.question || "").replace(/\s*\((?:Slide|Page)\s*#?\s*\d+[^)]*\)/gi, "").replace(/\b(?:on|in|from|according to)\s+(?:Slide|Page)\s*#?\s*\d+\b,?\s*/gi, "")}
                                   </p>
                                 )}
                               </div>

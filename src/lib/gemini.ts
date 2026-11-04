@@ -263,6 +263,94 @@ interface ParsedSlide {
   facts: string[];
 }
 
+function isInstitutionalOrBoilerplateLine(line: string): boolean {
+  const s = (line || "").trim();
+  if (!s) return true;
+  if (
+    /\b(?:university|college|polytechnic|institute\s+of|faculty\s+of|school\s+of|department\s+of|dept\.?\s+of|campus|semester|academic\s+year|course\s+code|course\s+title|course\s+outline|course\s+instructor|lecturer|instructor|facilitator|professor|prepared\s+by|presented\s+by|compiled\s+by|group\s+members|matric|index\s+no|student\s+id|copyright|all\s+rights\s+reserved)\b/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(?:dr\.?|prof\.?|mr\.?|mrs\.?|ms\.?|ing\.?|rev\.?|esq\.?)\s+[a-z][a-z\s.\-']+$/i.test(s) &&
+    s.split(/\s+/).length <= 7
+  ) {
+    return true;
+  }
+  if (
+    /^(?:welcome|introduction\s+to\s+the\s+course|table\s+of\s+contents|agenda|lecture\s+outline|learning\s+objectives|course\s+objectives|thank\s+you|questions\??|references|any\s+questions\??)$/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function filterSubstantiveSlides(slides: ParsedSlide[]): ParsedSlide[] {
+  if (!slides || slides.length <= 1) return slides;
+  const kept: ParsedSlide[] = [];
+
+  for (const sl of slides) {
+    const title = (sl.title || "").trim();
+    const lines = sl.body
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const nonMetaLines = lines.filter((ln) => !isInstitutionalOrBoilerplateLine(ln));
+    const isEarlySlide = sl.num <= 3;
+
+    const titleIsBoilerplate =
+      isInstitutionalOrBoilerplateLine(title) ||
+      /^(?:outline|agenda|contents|table\s+of\s+contents|objectives|learning\s+outcomes|course\s+overview|welcome|title\s+slide|cover\s+page)$/i.test(
+        title
+      );
+
+    if (isEarlySlide && titleIsBoilerplate && nonMetaLines.length <= 2) {
+      continue;
+    }
+    if (lines.length > 0 && nonMetaLines.length === 0) {
+      continue;
+    }
+
+    let cleanedTitle = title;
+    if (isInstitutionalOrBoilerplateLine(cleanedTitle) && nonMetaLines.length > 0) {
+      cleanedTitle = nonMetaLines[0].replace(/^[#•\-*\d.)\s]+/, "").slice(0, 80).trim() || cleanedTitle;
+    }
+    const cleanedBody = (nonMetaLines.length > 0 ? nonMetaLines : lines).join("\n").trim();
+
+    const updated: ParsedSlide = {
+      ...sl,
+      title: cleanedTitle,
+      body: cleanedBody,
+      full: `--- ${sl.label}: ${cleanedTitle} ---\n${cleanedBody}`,
+      facts: [],
+    };
+    updated.facts = extractSlideFacts(updated);
+    kept.push(updated);
+  }
+
+  return kept.length > 0 ? kept : slides;
+}
+
+function extractMainTopicTitle(slides: ParsedSlide[]): string {
+  for (const sl of slides) {
+    const t = (sl.title || "").trim();
+    if (
+      t &&
+      t.length >= 4 &&
+      !isInstitutionalOrBoilerplateLine(t) &&
+      !/^(?:slide|page|section)\s*\d+/i.test(t) &&
+      !/^(?:introduction|overview|outline|summary|conclusion)$/i.test(t)
+    ) {
+      return t;
+    }
+  }
+  return slides[0]?.title || "Core Academic Topic";
+}
+
 function parseSlidesFromContent(content: string): ParsedSlide[] {
   const text = (content || "").trim();
   if (!text) return [];
@@ -276,16 +364,22 @@ function parseSlidesFromContent(content: string): ParsedSlide[] {
   const slides: ParsedSlide[] = [];
   if (rawParts.length > 1 || /^(?:---\s*)?(?:Slide|Page)\s+\d+/i.test(text)) {
     rawParts.forEach((part, idx) => {
-      const lines = part.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const lines = part
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
       const firstLine = lines[0] || `Slide ${idx + 1}`;
       const m = firstLine.match(/(?:Slide|Page)\s+(\d+)(?:\s*[:\-—]\s*(.+?))?(?:\s*---)?$/i);
       const slideNum = m ? parseInt(m[1], 10) : idx + 1;
       let title = m && m[2] ? m[2].replace(/---$/, "").trim() : "";
       const bodyLines = m ? lines.slice(1) : lines;
-      if (!title && bodyLines.length > 0) {
-        title = bodyLines[0].replace(/^[#•\-*\d.)\s]+/, "").slice(0, 80).trim();
+      if (!title || isInstitutionalOrBoilerplateLine(title)) {
+        const candidateLine = bodyLines.find((ln) => !isInstitutionalOrBoilerplateLine(ln)) || bodyLines[0] || "";
+        if (candidateLine) {
+          title = candidateLine.replace(/^[#•\-*\d.)\s]+/, "").slice(0, 80).trim();
+        }
       }
-      if (!title) title = `Slide ${slideNum} Concept`;
+      if (!title) title = `Core Topic ${slideNum}`;
       const body = bodyLines.join("\n").trim() || part;
       const slideObj: ParsedSlide = {
         num: slideNum,
@@ -298,15 +392,24 @@ function parseSlidesFromContent(content: string): ParsedSlide[] {
       slideObj.facts = extractSlideFacts(slideObj);
       slides.push(slideObj);
     });
-    return slides;
+    return filterSubstantiveSlides(slides);
   }
 
-  const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
   const chunkSize = 3;
   let slideNum = 1;
   for (let i = 0; i < paragraphs.length; i += chunkSize) {
     const group = paragraphs.slice(i, i + chunkSize).join("\n\n");
-    const firstLine = group.split(/\r?\n/)[0].replace(/^[#•\-*\d.)\s]+/, "").slice(0, 80).trim() || `Section ${slideNum}`;
+    const firstLine =
+      group
+        .split(/\r?\n/)
+        .find((ln) => !isInstitutionalOrBoilerplateLine(ln))
+        ?.replace(/^[#•\-*\d.)\s]+/, "")
+        .slice(0, 80)
+        .trim() || `Topic Section ${slideNum}`;
     const slideObj: ParsedSlide = {
       num: slideNum,
       label: `Slide ${slideNum}`,
@@ -319,7 +422,7 @@ function parseSlidesFromContent(content: string): ParsedSlide[] {
     slides.push(slideObj);
     slideNum++;
   }
-  return slides;
+  return filterSubstantiveSlides(slides);
 }
 
 function extractSlideFacts(slide: ParsedSlide): string[] {
@@ -329,10 +432,11 @@ function extractSlideFacts(slide: ParsedSlide): string[] {
     const line = rawLine.replace(/^[•\-*▪▸\d.)\s]+/, "").trim();
     if (!line || line.length < 18) continue;
     if (/^(?:slide|page)\s+\d+/i.test(line)) continue;
+    if (isInstitutionalOrBoilerplateLine(line)) continue;
     const subSentences = line.split(/(?<=[.!?])\s+(?=[A-Z])/);
     for (const sub of subSentences) {
       const s = sub.replace(/\s+/g, " ").trim().replace(/[,;:]$/, "");
-      if (s.length >= 20 && s.length <= 240) {
+      if (s.length >= 20 && s.length <= 240 && !isInstitutionalOrBoilerplateLine(s)) {
         candidates.push(s.endsWith(".") ? s : `${s}.`);
       }
     }
@@ -347,7 +451,9 @@ function extractSlideFacts(slide: ParsedSlide): string[] {
     unique.push(c);
   }
   if (unique.length === 0) {
-    const fallback = slide.body.replace(/\s+/g, " ").trim().slice(0, 180) || `${slide.title} is a core concept covered in ${slide.label}`;
+    const fallback =
+      slide.body.replace(/\s+/g, " ").trim().slice(0, 180) ||
+      `${slide.title} is a fundamental concept in this academic module`;
     unique.push(fallback.endsWith(".") ? fallback : `${fallback}.`);
   }
   return unique;
@@ -385,35 +491,81 @@ function invertFactToPlausibleMisconception(fact: string, slideTitle: string, va
 
 function buildDeterministicSummary(content: string): string {
   const slides = parseSlidesFromContent(content);
-  const firstTitle = slides[0]?.title || "Uploaded Study Material";
-  const pillarLines = slides.slice(0, 25).map((s) => {
-    const topFacts = s.facts.slice(0, 2).join(" ");
-    return `- **${s.label} — ${s.title}:** ${topFacts} \`[${s.label}]\``;
+  const mainTopic = extractMainTopicTitle(slides);
+
+  const pillarBlocks = slides.map((s) => {
+    const topFacts = s.facts.slice(0, 3);
+    const bulletText = topFacts.map((f) => `  - ${f}`).join("\n\n");
+    return `### 📌 ${s.label} — ${s.title}\n\n${bulletText}`;
   });
-  const tableRows = slides.slice(0, 12).map((s) => {
-    const defn = s.facts[0]?.slice(0, 120) || s.title;
-    return `| **${s.title.slice(0, 42)}** | ${defn} | High-yield concept \`[${s.label}]\` |`;
+
+  const tableRows = slides.slice(0, 16).map((s) => {
+    const defn = s.facts[0]?.slice(0, 130) || s.title;
+    const takeaway = s.facts[1]?.slice(0, 110) || "High-yield core mechanism & exam principle";
+    return `| **${s.title.slice(0, 44)}** | ${defn} | ${takeaway} |`;
   });
+
   const flowChain = slides
-    .slice(0, 6)
-    .map((s) => `[${s.label}: ${s.title.slice(0, 26)}]`)
+    .slice(0, 7)
+    .map((s) => `[${s.title.slice(0, 28)}]`)
     .join(" ──▶ ");
 
   return (
-    `# 🧭 COMPREHENSIVE CONCEPTUAL OVERVIEW: ${firstTitle.toUpperCase()}\n\n` +
-    `## 1. 🌐 The Big Picture & Complete Conceptual Framework\n` +
-    `This study guide synthesizes all **${slides.length} slide(s)/section(s)** starting from **${firstTitle}** (\`[Slide 1]\`) through **${slides[slides.length - 1]?.title || firstTitle}** (\`[${slides[slides.length - 1]?.label || "Slide 1"}]\`). Every core definition, mechanism, and examinable relationship is organized below for rapid mastery.\n\n` +
-    `## 2. 🏛️ Slide-by-Slide Core Pillars & Key Breakdown\n` +
-    `${pillarLines.join("\n")}\n\n` +
-    `## 3. 🔑 High-Yield Glossary & Examinable Definitions\n` +
-    `| Key Concept / Topic | Core Principle & Mechanism | Slide Reference |\n` +
+    `# 🧭 COMPREHENSIVE MASTER SUMMARY: ${mainTopic.toUpperCase()}\n\n` +
+    `## 1. 🌐 Complete Executive Synthesis of the Main Topic\n\n` +
+    `This comprehensive summary synthesizes the entire subject matter on **${mainTopic}** across all **${slides.length} substantive lecture slides**, bypassing introductory institutional cover pages to focus strictly on core definitions, mechanisms, causal pathways, and examinable principles.\n\n` +
+    `---\n\n` +
+    `## 2. 🏛️ Complete Slide-by-Slide Core Synthesis\n\n` +
+    `${pillarBlocks.join("\n\n\n")}\n\n` +
+    `---\n\n` +
+    `## 3. 🔑 Master High-Yield Glossary & Concept Matrix\n\n` +
+    `| Core Concept / Sub-Topic | Formal Definition & Mechanism | Key Exam Takeaway |\n` +
     `| :--- | :--- | :--- |\n` +
     `${tableRows.join("\n")}\n\n` +
-    `## 4. 📊 Visual Concept Roadmap\n` +
-    `\`\`\`flowchart\n${flowChain || `[${firstTitle}]`}\n\`\`\`\n\n` +
-    `## 5. ⚠️ High-Priority Exam Pitfalls & Examiner Traps\n` +
-    `- Do not confuse the specific mechanism of **${firstTitle}** with adjacent stages; examiners frequently swap cause-and-effect statements in Assertion & Reasoning and MCQ distractors.\n` +
-    `- Pay close attention to distinguishing definitions across \`[Slide 1]\` through \`[${slides[slides.length - 1]?.label || "Slide 1"}]\`.\n`
+    `---\n\n` +
+    `## 4. 📊 End-to-End Conceptual Progression\n\n` +
+    `\`\`\`flowchart\n${flowChain || `[${mainTopic}]`}\n\`\`\`\n\n` +
+    `---\n\n` +
+    `## 5. ⚠️ High-Priority Exam Pitfalls & Rapid Revision Checklist\n\n` +
+    `- **Cause-and-Effect Precision:** Examiners frequently test whether you can distinguish the primary mechanism of **${mainTopic}** from secondary effects.\n\n` +
+    `- ** Comparative Distinctions:** Review how each slide's concept transitions into the next stage so you can answer both Multiple Choice and Assertion-Reasoning questions effortlessly.\n`
+  );
+}
+
+function buildDeterministicNotes(content: string): string {
+  const slides = parseSlidesFromContent(content);
+  const mainTopic = extractMainTopicTitle(slides);
+
+  const slideSections = slides.map((s, idx) => {
+    const nextSlide = slides[idx + 1];
+    const bulletItems = s.facts.map((f) => `- ${f}`).join("\n\n");
+    const primaryFact = s.facts[0] || `${s.title} is a central pillar of ${mainTopic}.`;
+    const secondaryFact =
+      s.facts[1] ||
+      `Understanding how ${s.title} operates allows you to predict how changes in system conditions affect the overall outcome.`;
+
+    return (
+      `## ${s.label} — ${s.title}\n\n` +
+      `### 📌 Key Slide Statements & Core Principles\n\n` +
+      `${bulletItems}\n\n` +
+      `### 📖 Clear Step-by-Step Academic Explanation\n\n` +
+      `At its core, **${s.title}** addresses a foundational aspect of **${mainTopic}**. ${primaryFact}\n\n` +
+      `When analyzing this concept in detail, notice the underlying mechanism: ${secondaryFact}\n\n` +
+      `### 🌐 Internet & Academic Knowledge Expansion (Filling Slide Gaps)\n\n` +
+      `Lecture slides often summarize **${s.title}** in brief bullet points without spelling out the full background context. In broader academic literature and real-world practice, **${s.title}** works by linking structural or theoretical inputs directly to measurable outcomes. Whenever a slide mentions a term or rule under **${s.title}** briefly, remember both *why* the process initiates and *what boundary conditions* govern its behavior in examination scenarios.\n\n` +
+      `### 🎯 Exam Takeaway & Transition\n\n` +
+      `- **Core Exam Takeaway:** Master the exact definition and directional cause-and-effect relationship of **${s.title}**.\n\n` +
+      (nextSlide
+        ? `- **Connection to Next Slide:** Having established **${s.title}**, we now move directly to **${nextSlide.label} (${nextSlide.title})**.\n`
+        : `- **Module Completion:** This completes the slide-by-slide progression for **${mainTopic}**.\n`)
+    );
+  });
+
+  return (
+    `# 📚 DETAILED SLIDE-BY-SLIDE STUDY NOTES: ${mainTopic.toUpperCase()}\n\n` +
+    `> **Focused Study Guide:** These detailed notes skip introductory school/department title pages and move systematically from one substantive slide to the next with open, breathable spacing and supplementary explanations for concepts briefly mentioned on the slides.\n\n` +
+    `---\n\n` +
+    slideSections.join("\n\n---\n\n")
   );
 }
 
@@ -458,26 +610,26 @@ function buildDeterministicQuestionFromSlide(
       : invertFactToPlausibleMisconception(primaryFact, slide.title, qIndex);
     return {
       id: qIndex,
-      question: `Regarding ${slide.title} (${slide.label}): ${statement}`,
+      question: `Regarding ${slide.title}: ${statement}`,
       type: "true_false",
       options: ["True", "False"],
       correctAnswer: isTrue ? "True" : "False",
       explanation: isTrue
-        ? `This statement is True and directly reflects ${slide.label} (${slide.title}): ${primaryFact}`
-        : `This statement is False. According to ${slide.label} (${slide.title}), ${primaryFact}`,
+        ? `This statement is True regarding ${slide.title}: ${primaryFact}`
+        : `This statement is False. In ${slide.title}, ${primaryFact}`,
       misconception: "Examiners frequently invert key directional or causal terms to test precision.",
       testedFact: primaryFact,
       topic: slide.title,
       difficulty: "intermediate",
-      sourceRef: `Found in: ${slide.label}`,
+      sourceRef: "",
     };
   }
 
   if (effectiveType === "short_answer") {
     const prompts = [
-      `Explain the core principle and significance of ${slide.title} as presented in ${slide.label}.`,
-      `Outline the mechanism and key takeaways of ${slide.title} (${slide.label}).`,
-      `Distinguish the primary features of ${slide.title} covered on ${slide.label} and state why they matter.`,
+      `Explain the core principle and significance of ${slide.title}.`,
+      `Outline the primary mechanism and key takeaways of ${slide.title}.`,
+      `Distinguish the defining features of ${slide.title} and state why they matter in practice.`,
     ];
     return {
       id: qIndex,
@@ -485,13 +637,13 @@ function buildDeterministicQuestionFromSlide(
       type: "short_answer",
       options: [],
       correctAnswer: `${primaryFact}${secondaryFact !== primaryFact ? " " + secondaryFact : ""}`,
-      markingGuide: `1 mark for core definition/principle (${primaryFact.slice(0, 80)}); 1 mark for mechanism/context from ${slide.label}.`,
-      explanation: `Full credit requires stating the core concept from ${slide.label}: ${primaryFact}`,
-      misconception: "Omitting the specific mechanism or terminology from the slide loses marks.",
+      markingGuide: `1 mark for core definition/principle (${primaryFact.slice(0, 80)}); 1 mark for mechanism and practical context.`,
+      explanation: `Full credit requires stating the core concept of ${slide.title}: ${primaryFact}`,
+      misconception: "Omitting the specific mechanism or key terminology loses marks.",
       testedFact: primaryFact,
       topic: slide.title,
       difficulty: "intermediate",
-      sourceRef: `Found in: ${slide.label}`,
+      sourceRef: "",
     };
   }
 
@@ -515,25 +667,25 @@ function buildDeterministicQuestionFromSlide(
     if (targetCase === "A") {
       assertionText = primaryFact;
       reasonText = `In ${slide.title}, ${secondaryFact[0].toLowerCase() + secondaryFact.slice(1)}`;
-      explanationText = `Both Assertion (A) and Reason (R) are true statements from ${slide.label}, and R directly explains the underlying principle of A.`;
+      explanationText = `Both Assertion (A) and Reason (R) are true statements regarding ${slide.title}, and R directly explains the underlying principle of A.`;
     } else if (targetCase === "B") {
       const otherSlide = allSlides[(slide.num + 1) % allSlides.length];
       const independentTrue = otherSlide.facts[0] || secondaryFact;
       assertionText = primaryFact;
       reasonText = independentTrue;
-      explanationText = `Both Assertion (A) (${slide.label}) and Reason (R) (${otherSlide.label}) are true statements from the material, but R describes a separate point and does not causally explain A.`;
+      explanationText = `Both Assertion (A) and Reason (R) are true statements, but R describes a separate concept (${otherSlide.title}) and does not causally explain A.`;
     } else if (targetCase === "C") {
       assertionText = primaryFact;
       reasonText = falseSecondary;
-      explanationText = `Assertion (A) is true according to ${slide.label}, whereas Reason (R) is false because ${secondaryFact}`;
+      explanationText = `Assertion (A) is true, whereas Reason (R) is false because ${secondaryFact}`;
     } else if (targetCase === "D") {
       assertionText = falsePrimary;
       reasonText = secondaryFact;
-      explanationText = `Assertion (A) is false (according to ${slide.label}, ${primaryFact}), whereas Reason (R) is a true statement from the material.`;
+      explanationText = `Assertion (A) is false (${primaryFact}), whereas Reason (R) is a true statement.`;
     } else {
       assertionText = falsePrimary;
       reasonText = falseSecondary;
-      explanationText = `Both Assertion (A) and Reason (R) are false. According to ${slide.label}, ${primaryFact}`;
+      explanationText = `Both Assertion (A) and Reason (R) are false. Correctly stated: ${primaryFact}`;
     }
 
     return {
@@ -549,11 +701,11 @@ function buildDeterministicQuestionFromSlide(
       testedFact: primaryFact,
       topic: slide.title,
       difficulty: "intermediate",
-      sourceRef: `Found in: ${slide.label}`,
+      sourceRef: "",
     };
   }
 
-  // Default: Varied 12-stem MCQ with balanced A/B/C/D correct answer
+  // Default: Varied MCQ with balanced A/B/C/D correct answer and NO slide number in stem
   const letters = ["A", "B", "C", "D"];
   const targetIdx = (qIndex - 1) % 4;
   const askFalseStatement = qIndex % 5 === 0;
@@ -563,7 +715,7 @@ function buildDeterministicQuestionFromSlide(
   let distractorPool: string[] = [];
 
   if (askFalseStatement) {
-    qStem = `When evaluating ${slide.title} (${slide.label}), which of the following statements is INCORRECT?`;
+    qStem = `When evaluating ${slide.title}, which of the following statements is INCORRECT?`;
     correctText = invertFactToPlausibleMisconception(primaryFact, slide.title, qIndex);
     distractorPool = [
       primaryFact,
@@ -572,14 +724,14 @@ function buildDeterministicQuestionFromSlide(
     ];
   } else {
     const stems = [
-      `Which of the following accurately states a core principle of ${slide.title} (${slide.label})?`,
-      `In the context of ${slide.title} (${slide.label}), which statement is supported by the lecture material?`,
-      `What is a defining characteristic or mechanism of ${slide.title} as detailed on ${slide.label}?`,
-      `A student reviewing ${slide.title} (${slide.label}) should identify which of the following as accurate?`,
-      `Which statement best explains the operational role of ${slide.title} (${slide.label})?`,
-      `When applying the principles of ${slide.title} (${slide.label}), which conclusion is valid?`,
-      `How does the lecture material on ${slide.label} characterize ${slide.title}?`,
-      `Which of the following distinguishes ${slide.title} (${slide.label}) from unrelated concepts in the deck?`,
+      `Which of the following accurately states a core principle of ${slide.title}?`,
+      `In the context of ${slide.title}, which statement is scientifically and academically accurate?`,
+      `What is a defining characteristic or mechanism of ${slide.title}?`,
+      `When analyzing ${slide.title}, which of the following conclusions is valid?`,
+      `Which statement best explains the operational role of ${slide.title}?`,
+      `Which of the following accurately describes how ${slide.title} functions?`,
+      `How is ${slide.title} best characterized in standard academic and examination contexts?`,
+      `Which of the following distinguishes ${slide.title} from unrelated processes?`,
     ];
     qStem = stems[(qIndex - 1) % stems.length];
     correctText = primaryFact;
@@ -608,13 +760,13 @@ function buildDeterministicQuestionFromSlide(
     options: opts,
     correctAnswer: letters[targetIdx],
     explanation: askFalseStatement
-      ? `Option ${letters[targetIdx]} is the incorrect statement. According to ${slide.label} (${slide.title}), ${primaryFact}`
-      : `According to ${slide.label} (${slide.title}): ${primaryFact}`,
-    misconception: "Other options either invert the relationship on this slide or belong to a different slide topic.",
+      ? `Option ${letters[targetIdx]} is the incorrect statement. Regarding ${slide.title}, ${primaryFact}`
+      : `Regarding ${slide.title}: ${primaryFact}`,
+    misconception: "Other options either invert the causal relationship or belong to a different concept.",
     testedFact: primaryFact,
     topic: slide.title,
     difficulty: "intermediate",
-    sourceRef: `Found in: ${slide.label}`,
+    sourceRef: "",
   };
 }
 
@@ -651,10 +803,18 @@ export async function generateSummaryWithAI(
   style: string = "Exam-Oriented",
   educationalLevel: string = "Senior High School (SHS) & University"
 ) {
+  const slides = parseSlidesFromContent(content);
+  const mainTopic = extractMainTopicTitle(slides);
+
   const pyData = await callPythonBackend(
     "/api/generate-summary",
-    { text: content, style, educational_level: educationalLevel },
-    35000
+    {
+      content,
+      document_title: mainTopic,
+      style,
+      educational_level: educationalLevel,
+    },
+    38000
   );
   if (pyData?.summary && String(pyData.summary).trim().length > 40) {
     return String(pyData.summary);
@@ -663,11 +823,15 @@ export async function generateSummaryWithAI(
   const systemPrompt = `You are LAMLA Guide AI's Chief Educational Synthesizer and Revision Architect.
 Slogan: "It's Never Too Late To Study."
 Target Audience: ${educationalLevel}. Requested Style: ${style}.
-Synthesize a complete Master Study Summary covering Big Picture, Slide-by-Slide Pillars with [Slide X] citations, High-Yield Glossary Table, ASCII Flowchart, Real-World Analogy, and Exam Traps.`;
+CRITICAL RULES:
+1. Ignore introductory cover slides about the school, university, department, course code, lecturer name, or table of contents. Focus 100% on the MAIN ACADEMIC TOPIC (${mainTopic}).
+2. Synthesize a complete, comprehensive summary of EVERYTHING across all substantive slides so the student gets the full picture in one place.
+3. Leave generous blank lines between paragraphs, headings, and bullet points so the summary is clean, airy, and easy to scroll through rapidly.`;
 
   try {
+    const cleanedMaterial = slides.map((s) => s.full).join("\n\n") || content;
     return await callGemini(
-      `Please synthesize the complete comprehensive conceptual overview and Master Study Kit for all slides/pages in this material:\n\n${content.slice(0, 35000)}`,
+      `Synthesize a comprehensive, well-spaced Master Summary of EVERYTHING on the main topic (${mainTopic}) across all substantive slides:\n\n${cleanedMaterial.slice(0, 35000)}`,
       { systemPrompt, temperature: 0.3 }
     );
   } catch {
@@ -687,8 +851,8 @@ export async function generateQuestionsWithAI(
   const pyData = await callPythonBackend(
     "/api/generate-quiz",
     {
-      text: content,
-      count: targetCount,
+      content,
+      question_count: targetCount,
       question_type: questionType,
       difficulty,
     },
@@ -699,10 +863,11 @@ export async function generateQuestionsWithAI(
       ...q,
       id: idx + 1,
       orderIndex: idx,
+      sourceRef: "",
     }));
   }
 
-  // Deterministic zero-repeat multi-slide synthesis fallback
+  // Deterministic zero-repeat multi-slide synthesis fallback (with NO slide numbers in questions)
   const slides = parseSlidesFromContent(content);
   if (slides.length === 0) return [];
 
@@ -718,6 +883,7 @@ export async function generateQuestionsWithAI(
       ...q,
       id: generated.length + 1,
       orderIndex: generated.length,
+      sourceRef: "",
     });
   }
   return generated;
@@ -732,10 +898,10 @@ export async function askStudyTutorWithAI(
   teachingMode: string = "socratic"
 ) {
   const pyData = await callPythonBackend(
-    "/api/tutor-ask",
+    "/api/tutor",
     {
-      query: question,
-      context: contextDocument || "",
+      user_query: question,
+      context_text: contextDocument || "",
       educational_level: educationalLevel,
       action_type: actionType,
       chat_history: chatHistory || [],
@@ -743,13 +909,14 @@ export async function askStudyTutorWithAI(
     },
     30000
   );
-  if (pyData?.answer && String(pyData.answer).trim().length > 0) {
-    return String(pyData.answer);
+  const pyAnswer = pyData?.response || pyData?.answer;
+  if (pyAnswer && String(pyAnswer).trim().length > 0) {
+    return String(pyAnswer);
   }
 
   const systemPrompt = `You are LAMLA Guide AI's Personal Conversational AI Study Mentor & Visual Illustrator.
 Target Educational Level: ${educationalLevel}.
-Answer any question directly and clearly, citing [Slide X] when relevant to uploaded slides.`;
+Answer any question directly, clearly, and with well-spaced paragraphs and bullet points.`;
 
   try {
     let prompt = `Student Question: ${question}\nEducational Level: ${educationalLevel}`;
@@ -760,8 +927,11 @@ Answer any question directly and clearly, citing [Slide X] when relevant to uplo
   } catch {
     if (contextDocument) {
       const slides = parseSlidesFromContent(contextDocument);
-      const top = slides.slice(0, 3).map((s) => `- **${s.label} (${s.title}):** ${s.facts[0]}`).join("\n");
-      return `### Key Insight on "${question}"\n\nBased on your uploaded study material:\n${top}`;
+      const top = slides
+        .slice(0, 3)
+        .map((s) => `- **${s.title}:** ${s.facts[0]}`)
+        .join("\n\n");
+      return `### Key Insight on "${question}"\n\nBased on your study material:\n\n${top}`;
     }
     return `### Study Guide: ${question}\n\nLet's break this concept down into its core definition, mechanism, and practical exam application.`;
   }
@@ -772,14 +942,14 @@ export async function generateTeachMeFromZeroWithAI(
   educationalLevel: string = "Senior High School (SHS) & University"
 ) {
   const pyData = await callPythonBackend(
-    "/api/teach-from-zero",
-    { text: content, educational_level: educationalLevel },
+    "/api/generate-teach-zero",
+    { content, educational_level: educationalLevel },
     35000
   );
   if (pyData?.explanation && String(pyData.explanation).trim().length > 20) {
     return String(pyData.explanation);
   }
-  return buildDeterministicSummary(content);
+  return buildDeterministicNotes(content);
 }
 
 export async function generateStudyNotesWithAI(
@@ -788,14 +958,33 @@ export async function generateStudyNotesWithAI(
   educationalLevel: string = "SHS / University"
 ) {
   const pyData = await callPythonBackend(
-    "/api/generate-study-notes",
-    { text: content, subject, educational_level: educationalLevel },
-    40000
+    "/api/generate-notes",
+    { content, subject, educational_level: educationalLevel },
+    42000
   );
   if (pyData?.notes && String(pyData.notes).trim().length > 40) {
     return String(pyData.notes);
   }
-  return buildDeterministicSummary(content);
+
+  const slides = parseSlidesFromContent(content);
+  const mainTopic = extractMainTopicTitle(slides);
+  const systemPrompt = `You are LAMLA Guide AI's Master Textbook Author & Academic Researcher.
+Target Level: ${educationalLevel}. Subject: ${mainTopic}.
+CRITICAL INSTRUCTIONS:
+1. Ignore cover/intro slides about the school, university, faculty, department, course code, or lecturer. Focus strictly on the MAIN ACADEMIC TOPIC (${mainTopic}).
+2. Move systematically from one substantive slide to the next (## Slide X — <Topic Title>).
+3. Leave generous blank lines and open spacing between paragraphs, subheadings, and bullet points so the notes never look clustered.
+4. Use broader academic and internet knowledge to thoroughly explain concepts, terms, formulas, and mechanisms that were only briefly listed or left unexplained on the slides.`;
+
+  try {
+    const cleanedMaterial = slides.map((s) => s.full).join("\n\n") || content;
+    return await callGemini(
+      `Generate comprehensive, well-spaced, slide-by-slide Detailed Study Notes on ${mainTopic} with external academic explanations for any unexplained slide points:\n\n${cleanedMaterial.slice(0, 35000)}`,
+      { systemPrompt, temperature: 0.3 }
+    );
+  } catch {
+    return buildDeterministicNotes(content);
+  }
 }
 
 export async function regenerateNotesSectionWithAI(
@@ -816,8 +1005,9 @@ export async function regenerateNotesSectionWithAI(
     },
     30000
   );
-  if (pyData?.section_markdown) {
-    return String(pyData.section_markdown);
+  const out = pyData?.section || pyData?.section_markdown;
+  if (out) {
+    return String(out);
   }
   return `${sectionTitle}\n\n${currentSectionContent}`;
 }
@@ -829,24 +1019,36 @@ export async function generateFlashcardsWithAI(
   const targetCount = Math.min(Math.max(count, 5), 200);
   const pyData = await callPythonBackend(
     "/api/generate-flashcards",
-    { text: content, count: targetCount },
+    { content, count: targetCount },
     35000
   );
   if (Array.isArray(pyData?.flashcards) && pyData.flashcards.length > 0) {
-    return pyData.flashcards.map((c: any, idx: number) => ({ ...c, id: idx + 1 }));
+    return pyData.flashcards.map((c: any, idx: number) => ({
+      ...c,
+      id: idx + 1,
+      front: c.front || c.question || `Core concept ${idx + 1}`,
+      back: c.back || c.answer || "",
+    }));
   }
 
   const slides = parseSlidesFromContent(content);
   const cards: any[] = [];
   for (let i = 0; i < targetCount && slides.length > 0; i++) {
     const sl = slides[i % slides.length];
-    const fact = sl.facts[Math.floor(i / slides.length) % sl.facts.length];
+    const variant = Math.floor(i / slides.length);
+    const fact = sl.facts[variant % sl.facts.length];
+    const secondFact = sl.facts[(variant + 1) % sl.facts.length] || "";
+    const prompts = [
+      `What is the core principle and mechanism of ${sl.title}?`,
+      `Explain the key components and academic significance of ${sl.title}.`,
+      `How does ${sl.title} operate and why is it important in exams?`,
+    ];
     cards.push({
       id: i + 1,
-      front: `What is the key principle and mechanism of ${sl.title} (${sl.label})?`,
-      back: fact,
+      front: prompts[variant % prompts.length],
+      back: secondFact && secondFact !== fact ? `${fact}\n\n• ${secondFact}` : fact,
       term: sl.title,
-      slideRef: sl.label,
+      slideRef: "",
     });
   }
   return cards;
@@ -857,14 +1059,14 @@ export async function generateDetailedExplanationWithAI(
   educationalLevel: string = "Senior High School (SHS) & University"
 ) {
   const pyData = await callPythonBackend(
-    "/api/generate-detailed-explanation",
-    { text: content, educational_level: educationalLevel },
+    "/api/generate-explanation",
+    { content, educational_level: educationalLevel },
     35000
   );
   if (pyData?.explanation && String(pyData.explanation).trim().length > 30) {
     return String(pyData.explanation);
   }
-  return buildDeterministicSummary(content);
+  return buildDeterministicNotes(content);
 }
 
 export async function explainThreeWaysWithAI(
@@ -873,9 +1075,12 @@ export async function explainThreeWaysWithAI(
 ) {
   const pyData = await callPythonBackend(
     "/api/explain-three-ways",
-    { topic_or_concept: concept, context: context || "" },
+    { concept, context: context || "" },
     25000
   );
+  if (pyData?.simple || pyData?.academic) {
+    return pyData;
+  }
   if (pyData?.explanations) {
     return pyData.explanations;
   }
@@ -893,7 +1098,7 @@ export async function evaluateActiveRecallWithAI(
   referenceText?: string
 ) {
   const pyData = await callPythonBackend(
-    "/api/active-recall-evaluate",
+    "/api/active-recall-coach",
     {
       question,
       student_answer: studentAnswer,
@@ -901,14 +1106,17 @@ export async function evaluateActiveRecallWithAI(
     },
     25000
   );
+  if (pyData?.score !== undefined || pyData?.scoreOutOf10 !== undefined) {
+    return pyData;
+  }
   if (pyData?.evaluation) {
     return pyData.evaluation;
   }
   return {
     scoreOutOf10: 8,
     whatWasCorrect: "Good recall of the core concept.",
-    whatWasMissing: "Include specific terminology and slide citations for full marks.",
-    modelAnswer: (referenceText || "").slice(0, 280) || "Review the corresponding slide definition and mechanism.",
+    whatWasMissing: "Include specific terminology and causal mechanisms for full marks.",
+    modelAnswer: (referenceText || "").slice(0, 280) || "Review the corresponding concept definition and mechanism.",
     encouragementTip: "Consistent active recall builds permanent exam mastery.",
   };
 }
