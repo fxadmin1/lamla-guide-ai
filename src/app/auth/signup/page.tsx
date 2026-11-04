@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { AlertCircle, Bell, CheckCircle2, Eye, EyeOff, Users } from "lucide-react";
 import { EDUCATIONAL_LEVELS } from "@/lib/constants";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase, friendlyAuthError } from "@/lib/supabase";
 import {
   requestBrowserNotificationPermission,
   triggerStudyNotification,
@@ -121,7 +121,7 @@ export default function SignUpPage() {
         });
 
         if (error) {
-          setMessage({ type: "error", text: error.message });
+          setMessage({ type: "error", text: friendlyAuthError(error, "Unable to create account.") });
         } else {
           const nextUrl = data?.session
             ? joinCode
@@ -149,7 +149,7 @@ export default function SignUpPage() {
           }
         }
       } catch (err: any) {
-        setMessage({ type: "error", text: err?.message || "An unexpected error occurred." });
+        setMessage({ type: "error", text: friendlyAuthError(err, "An unexpected error occurred.") });
       } finally {
         setLoading(false);
       }

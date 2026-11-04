@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { AlertCircle, CheckCircle2, Eye, EyeOff, Users } from "lucide-react";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase, withAuthRetry, friendlyAuthError } from "@/lib/supabase";
 
 interface InvitePreview {
   name: string;
@@ -71,13 +71,15 @@ export default function LoginPage() {
 
     if (isSupabaseConfigured()) {
       try {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
+        const { error } = await withAuthRetry(() =>
+          supabase.auth.signInWithPassword({
+            email: email.trim(),
+            password,
+          })
+        );
 
         if (error) {
-          setMessage({ type: "error", text: error.message });
+          setMessage({ type: "error", text: friendlyAuthError(error, "Unable to sign in.") });
         } else {
           setMessage({
             type: "success",
@@ -92,7 +94,7 @@ export default function LoginPage() {
           }, 500);
         }
       } catch (err: any) {
-        setMessage({ type: "error", text: err?.message || "Unable to sign in." });
+        setMessage({ type: "error", text: friendlyAuthError(err, "Unable to sign in.") });
       } finally {
         setLoading(false);
       }
