@@ -46,7 +46,7 @@ export interface SlideSegment {
 
 export function parseDocumentSlides(text: string): SlideSegment[] {
   if (!text) return [];
-  const slideRegex = /---\s*(?:Slide|Page)\s*(\d+)[:\s]*([^\n-]*)---\n?/gi;
+  const slideRegex = /---\s*(?:Slide|Page)\s*(\d+)(?:\s*[:\-—]\s*([^\r\n]*?))?\s*---\r?\n?/gi;
   const matches = [...text.matchAll(slideRegex)];
 
   if (matches.length > 0) {

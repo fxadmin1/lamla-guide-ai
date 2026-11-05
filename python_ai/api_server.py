@@ -134,8 +134,11 @@ SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self' https: data: blob:; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: blob:; "
+        "worker-src 'self' blob:; "
         "style-src 'self' 'unsafe-inline' https:; "
         "img-src 'self' data: blob: https:; "
+        "media-src 'self' data: blob: https:; "
+        "frame-src 'self' https: data: blob:; "
         "connect-src 'self' https: wss: ws: http://127.0.0.1:* http://localhost:*; "
         "font-src 'self' data: https:; "
         "frame-ancestors 'self'; "

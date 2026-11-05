@@ -1074,23 +1074,34 @@ export default function StudentDashboardPage() {
         const data = await res.json();
         if (!data.summary) throw new Error(data.error || "Failed to generate summary.");
 
+        const existingSum = summaries.find((s) => s.document_id === activeSession.id);
         let savedSummary: any = null;
         if (user) {
-          const { data: s } = await supabase
-            .from("summaries")
-            .insert({
-              document_id: activeSession.id,
-              user_id: user.id,
-              title: `${activeSession.title} - Summary`,
-              content: data.summary,
-              style: "Exam-Oriented",
-            })
-            .select()
-            .single();
-          savedSummary = s;
+          if (existingSum && !String(existingSum.id).startsWith("local-")) {
+            const { data: s } = await supabase
+              .from("summaries")
+              .update({ content: data.summary })
+              .eq("id", existingSum.id)
+              .select()
+              .single();
+            savedSummary = s;
+          } else {
+            const { data: s } = await supabase
+              .from("summaries")
+              .insert({
+                document_id: activeSession.id,
+                user_id: user.id,
+                title: `${activeSession.title} - Summary`,
+                content: data.summary,
+                style: "Exam-Oriented",
+              })
+              .select()
+              .single();
+            savedSummary = s;
+          }
         }
         const summaryObj = savedSummary || {
-          id: `local-sum-${Date.now()}`,
+          id: existingSum?.id || `local-sum-${Date.now()}`,
           document_id: activeSession.id,
           user_id: user?.id || "local",
           title: `${activeSession.title} - Summary`,
@@ -1098,7 +1109,10 @@ export default function StudentDashboardPage() {
           style: "Exam-Oriented",
           created_at: new Date().toISOString(),
         };
-        setSummaries((prev) => [summaryObj, ...prev]);
+        setSummaries((prev) => [
+          summaryObj,
+          ...prev.filter((s) => s.document_id !== activeSession.id),
+        ]);
         setActiveTab("summary");
       } else if (resourceType === "flashcards") {
         const countToGenerate = customCount || flashcardGenerateCount || 20;
@@ -1198,23 +1212,36 @@ export default function StudentDashboardPage() {
         const data = await res.json();
         if (!data.notes) throw new Error(data.error || "Failed to generate detailed notes.");
 
+        const existingNote = studyNotes.find(
+          (n) => n.document_id === activeSession.id && (n.subject === "exam_notes" || n.subject === "notes")
+        );
         let savedNote: any = null;
         if (user) {
-          const { data: noteRow } = await supabase
-            .from("study_notes")
-            .insert({
-              document_id: activeSession.id,
-              user_id: user.id,
-              title: `${activeSession.title} - Detailed Notes`,
-              content: data.notes,
-              subject: "exam_notes",
-            })
-            .select()
-            .single();
-          savedNote = noteRow;
+          if (existingNote && !String(existingNote.id).startsWith("local-")) {
+            const { data: noteRow } = await supabase
+              .from("study_notes")
+              .update({ content: data.notes })
+              .eq("id", existingNote.id)
+              .select()
+              .single();
+            savedNote = noteRow;
+          } else {
+            const { data: noteRow } = await supabase
+              .from("study_notes")
+              .insert({
+                document_id: activeSession.id,
+                user_id: user.id,
+                title: `${activeSession.title} - Detailed Notes`,
+                content: data.notes,
+                subject: "exam_notes",
+              })
+              .select()
+              .single();
+            savedNote = noteRow;
+          }
         }
         const noteObj = savedNote || {
-          id: `local-note-${Date.now()}`,
+          id: existingNote?.id || `local-note-${Date.now()}`,
           document_id: activeSession.id,
           user_id: user?.id || "local",
           title: `${activeSession.title} - Detailed Notes`,
@@ -1222,7 +1249,12 @@ export default function StudentDashboardPage() {
           subject: "exam_notes",
           created_at: new Date().toISOString(),
         };
-        setStudyNotes((prev) => [noteObj, ...prev]);
+        setStudyNotes((prev) => [
+          noteObj,
+          ...prev.filter(
+            (n) => !(n.document_id === activeSession.id && (n.subject === "exam_notes" || n.subject === "notes"))
+          ),
+        ]);
         setActiveTab("notes");
       }
     } catch (err: any) {
@@ -2784,6 +2816,18 @@ export default function StudentDashboardPage() {
                         <div className="flex flex-wrap items-center gap-3 pt-1">
                           <button
                             type="button"
+                            disabled={generatingResource === "summary"}
+                            onClick={() => handleGenerateAdditionalResource("summary")}
+                            className="px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${generatingResource === "summary" ? "animate-spin" : ""}`} />
+                            <span>
+                              {generatingResource === "summary" ? "Regenerating Summary..." : "Regenerate Full Summary"}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
                             onClick={() => {
                               setThreeWaysConcept(activeSession.title);
                               setShowThreeWaysModal(true);
@@ -2830,7 +2874,27 @@ export default function StudentDashboardPage() {
 
                 {/* ─── TAB: DETAILED NOTES ─── */}
                 {activeTab === "notes" && (
-                  <div className="space-y-6">
+                  <div className="space-y-4">
+                    {sessionNotes && (
+                      <div className="flex flex-wrap items-center justify-between gap-3 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/60 rounded-xl px-4 py-2.5">
+                        <span className="text-xs text-slate-700 dark:text-slate-300">
+                          Want freshly expanded slide-by-slide notes explaining every concept on every slide with internet context?
+                        </span>
+                        <button
+                          type="button"
+                          disabled={generatingResource === "notes"}
+                          onClick={() => handleGenerateAdditionalResource("notes")}
+                          className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 shrink-0"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${generatingResource === "notes" ? "animate-spin" : ""}`} />
+                          <span>
+                            {generatingResource === "notes"
+                              ? "Generating Ultra-Detailed Notes..."
+                              : "Regenerate Ultra-Detailed Notes"}
+                          </span>
+                        </button>
+                      </div>
+                    )}
                     {sessionNotes ? (
                       <SourceGroundedNotesWorkspace
                         content={sessionNotes.content}

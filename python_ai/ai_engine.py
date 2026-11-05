@@ -1189,7 +1189,7 @@ MANDATORY REQUIREMENTS:
         try:
             unique_queries: List[Tuple[int, str]] = []
             seen_q = set()
-            for s in slides[:18]:
+            for s in slides[:30]:
                 q_term = f"{s['title']} {main_topic}" if s["title"].lower() != main_topic.lower() else s["title"]
                 q_norm = q_term.lower().strip()
                 if q_norm not in seen_q:
@@ -1199,39 +1199,67 @@ MANDATORY REQUIREMENTS:
             def _fetch_slide_web(item: Tuple[int, str]) -> Tuple[int, str]:
                 s_num, s_title = item
                 info = research_topic_from_web(s_title, include_images=False)
-                return s_num, str(info.get("summary_text") or "").strip()
+                txt = str(info.get("summary_text") or "").strip()
+                if not txt and main_topic:
+                    info2 = research_topic_from_web(f"{s_title} ({main_topic})", include_images=False)
+                    txt = str(info2.get("summary_text") or "").strip()
+                return s_num, txt
 
-            with ThreadPoolExecutor(max_workers=4) as web_pool:
+            with ThreadPoolExecutor(max_workers=6) as web_pool:
                 for s_num, summary_txt in web_pool.map(_fetch_slide_web, unique_queries):
                     if summary_txt:
                         slide_web_notes[s_num] = summary_txt
         except Exception:
             pass
 
-        batch_size = 8
+        batch_size = 3
         slide_batches = [slides[i : i + batch_size] for i in range(0, len(slides), batch_size)] or [slides]
 
         def _build_spaced_fallback_for_slide(s: Dict[str, Any]) -> str:
             s_facts = self._extract_slide_facts(s)
-            spaced_bullets = "\n\n".join(f"- **{self._extract_concept_focus(f, s['title'])}:** {f}" for f in s_facts)
+            raw_lines = [
+                ln.strip().lstrip("•-*▪▸ ")
+                for ln in s["body"].splitlines()
+                if ln.strip() and not self._is_institutional_or_boilerplate_line(ln)
+            ]
+            all_points = s_facts if len(s_facts) >= len(raw_lines) else raw_lines or s_facts
+
+            spaced_bullets = "\n\n".join(
+                f"- **{self._extract_concept_focus(pt, s['title'])}:** {pt}"
+                for pt in all_points
+            )
+
+            concept_deep_dives: List[str] = []
+            for c_idx, pt in enumerate(all_points, start=1):
+                c_focus = self._extract_concept_focus(pt, s["title"])
+                concept_deep_dives.append(
+                    f"#### 🔹 Concept {c_idx}: {c_focus}\n\n"
+                    f"- **Core Statement on Slide:** {pt}\n\n"
+                    f"- **In-Depth Academic Explanation:** Within **{s['title']}** (part of **{main_topic}**), **{c_focus}** defines a critical structural or functional principle. Rather than treating this statement as an isolated line to memorize, understand what triggers or governs it, how it transforms the state of the system, and why the lecture slide highlights it as a core building block.\n\n"
+                    f"- **Step-by-Step Mechanism & Cause-Effect Logic:** When applying **{c_focus}**, identify (1) the initial condition or prerequisite input, (2) the active mechanism or rule described by *\"{pt}\"*, and (3) the resulting measurable outcome or consequence on **{s['title']}**.\n\n"
+                    f"- **Practical Example & Exam Application:** In university and SHS examinations, questions on **{c_focus}** frequently test whether you can distinguish its true operational mechanism from common misconceptions (such as reversing cause and effect or ignoring boundary conditions)."
+                )
+
             web_extra = slide_web_notes.get(s["num"], "")
             if not web_extra and web_brief:
-                web_extra = web_brief[:550]
+                web_extra = web_brief[:800]
+
             internet_block = (
-                f"\n\n#### 🌐 Internet-Enriched Deep Explanation (Beyond the Slide)\n\n"
+                f"### 🌐 Internet & Textbook Knowledge Expansion (Explaining Unexplained Slide Concepts)\n\n"
                 f"{web_extra}\n\n"
-                f"This additional context clarifies the underlying mechanism and broader academic meaning of **{s['title']}** where the lecture slide bullets are concise."
+                f"**How This Expands the Slide:** Lecture slides often list terms and bullet points concisely without full textbook paragraphs. The external academic context above fills in the background theory, historical/scientific foundation, and broader real-world mechanism of **{s['title']}** within **{main_topic}**."
                 if web_extra
                 else (
-                    f"\n\n#### 💡 Deep Conceptual Breakdown\n\n"
-                    f"In **{main_topic}**, **{s['title']}** connects the foundational definitions on `{s['label']}` to practical problem-solving and examination analysis. "
-                    f"Focus on how each component interacts step by step rather than memorizing isolated lines."
+                    f"### 🌐 Deeper Textbook & Internet Context (Beyond the Slide Bullets)\n\n"
+                    f"Lecture slides typically present condensed bullet points for **{s['title']}**. In comprehensive textbook and academic literature on **{main_topic}**, **{s['title']}** operates as an integrated process where each definition, variable, and mechanism interacts dynamically. Pay special attention to the boundary conditions, underlying assumptions, and real-world applications of every point unpacked above."
                 )
             )
             return (
                 f"## {s['label']} — {s['title']} `[Source: {s['label']}]`\n\n"
-                f"#### 📌 Core Points from This Slide\n\n"
-                f"{spaced_bullets}\n"
+                f"### 📌 Complete Slide Statements & Key Points\n\n"
+                f"{spaced_bullets}\n\n"
+                f"### 🔬 Concept-by-Concept Deep Explanation (Every Slide Point Explained in Full)\n\n"
+                f"{chr(10) + chr(10).join(concept_deep_dives)}\n\n"
                 f"{internet_block}\n"
             )
 
@@ -1244,25 +1272,32 @@ MANDATORY REQUIREMENTS:
                 batch_blocks.append(f"{s['full']}{w_line}")
             batch_text = "\n\n".join(batch_blocks)
 
-            system = f"""You are LAMLA Guide AI's Master Lecturer & Chief Examiner.
+            system = f"""You are LAMLA Guide AI's Master Textbook Author, Professor & Chief Examiner.
 Main Topic: {main_topic}. Level: {educational_level}.
 
-MANDATORY FORMATTING & PEDAGOGICAL RULES:
-1. FOCUS ON THE MAIN ACADEMIC TOPIC ({main_topic}):
+MANDATORY FORMATTING & ULTRA-DETAILED PEDAGOGICAL RULES:
+1. FOCUS 100% ON THE MAIN ACADEMIC TOPIC ({main_topic}):
    - Completely IGNORE any school/university name, faculty, department, course code, or lecturer intro.
 2. MOVE SYSTEMATICALLY FROM ONE SLIDE TO THE NEXT:
    - This batch contains: {slide_labels}.
-   - Create a dedicated, clearly titled section (`## Slide X — <Topic Title> [Source: Slide X]`) for each slide in order ({slide_labels}).
-3. LEAVE GENEROUS SPACES WITHIN EXPLANATIONS (NEVER CLUSTER TEXT):
-   - Put a blank line between EVERY paragraph and between EVERY bullet point (`\\n\\n`) so the explanation breathes and never looks cramped or clustered.
-   - Separate each slide section with a horizontal divider (`\\n\\n---\\n\\n`).
-4. USE INTERNET KNOWLEDGE TO EXPLAIN UNEXPLAINED SLIDE CONCEPTS:
-   - Whenever a slide lists a term, bullet point, formula, or mechanism without fully explaining it, use the provided Internet Research and your academic knowledge to explain **what it means**, **how and why it works**, and **real-world examples** in a dedicated `#### 🌐 Deeper Explanation & Context` sub-section."""
+   - You MUST write a dedicated, exhaustive section (`## Slide X — <Topic Title> [Source: Slide X]`) for EVERY slide in ({slide_labels}) in exact numerical order. Never skip or merge slides.
+3. EXPLAIN EVERY SINGLE CONCEPT ON EVERY SLIDE IN DEEP DETAIL:
+   - Do NOT write brief summaries! The student wants VERY, VERY DETAILED textbook-grade notes explaining every concept on every slide.
+   - Within each slide (`## Slide X — <Topic Title> [Source: Slide X]`), include:
+     a) `### 📌 Core Points from This Slide` — every key point from the slide clearly stated with blank lines between bullets.
+     b) `### 🔬 Concept-by-Concept Deep Dive (Every Concept Explained)` — create a dedicated sub-section (`#### 🔹 <Concept / Term / Principle Name>`) for EVERY SINGLE concept, bullet point, formula, or process mentioned on that slide. For each concept, thoroughly explain:
+        - **Definition & Plain-English Meaning** (what it is in clear, simple terms and formal academic terms)
+        - **Step-by-Step Mechanism (How & Why It Works)** (walk through the exact process, cause-and-effect chain, or logic step by step)
+        - **Real-World / Practical Example & Exam Application** (a concrete example and how examiners test this specific concept)
+     c) `### 🌐 Internet & Textbook Knowledge Expansion (Filling Slide Gaps)` — use the provided Internet Research and your comprehensive academic knowledge to deeply explain any terms, background mechanisms, equations, or concepts that were only briefly mentioned or left unexplained on the slide.
+4. LEAVE GENEROUS SPACES WITHIN EXPLANATIONS (NEVER CLUSTER TEXT):
+   - Put a blank line between EVERY paragraph, between EVERY sub-heading, and between EVERY bullet point (`\\n\\n`) so the explanation is open, clean, and effortless to read.
+   - Separate each slide section with a horizontal divider (`\\n\\n---\\n\\n`)."""
 
             extra_web = f"\n\nGeneral Internet Reference:\n{web_brief}" if (web_brief and batch_idx == 0) else ""
             prompt = (
-                f"Write openly spaced, slide-by-slide Detailed Study Notes for ({slide_labels}) on {main_topic}, "
-                f"using internet context to explain any brief or unexplained concepts:\n\n"
+                f"Write ULTRA-DETAILED, textbook-depth, openly spaced slide-by-slide Study Notes for ({slide_labels}) on {main_topic}. "
+                f"Unpack and thoroughly explain EVERY SINGLE concept, term, and bullet point on each slide, and use internet/textbook knowledge to explain anything the slide only mentions briefly:\n\n"
                 f"{batch_text}{extra_web}"
             )
             try:

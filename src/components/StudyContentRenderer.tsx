@@ -212,19 +212,40 @@ export default function StudyContentRenderer({
               <Printer className="w-3.5 h-3.5" />
             </button>
           </div>
+
+          {/* Interactive Hold-and-Drag Horizontal Scroll Scrubber */}
+          <div className="w-full pt-2 border-t border-slate-200/70 dark:border-slate-800/70">
+            <FastScrollHandle
+              scrollContainerRef={scrollContainerRef}
+              orientation="horizontal"
+              label="Summary Hold and Drag Scroll Bar"
+            />
+          </div>
         </div>
 
-        {/* Content Body + Draggable Fast-Scroll Handle */}
-        <div className="relative">
-          <div className="sticky top-24 float-right mr-2 sm:mr-4 mt-4 z-30">
-            <FastScrollHandle scrollContainerRef={scrollContainerRef} label="Summary Fast Scroll" />
+        {/* Content Body + Left & Right Draggable Fast-Scroll Handles */}
+        <div className="relative overflow-hidden">
+          <div className="absolute left-1.5 sm:left-2.5 top-1/2 -translate-y-1/2 z-30">
+            <FastScrollHandle
+              scrollContainerRef={scrollContainerRef}
+              side="left"
+              label="Summary Left Fast Scroll"
+            />
+          </div>
+
+          <div className="absolute right-1.5 sm:right-2.5 top-1/2 -translate-y-1/2 z-30">
+            <FastScrollHandle
+              scrollContainerRef={scrollContainerRef}
+              side="right"
+              label="Summary Right Fast Scroll"
+            />
           </div>
 
           <div
             ref={scrollContainerRef}
             onWheel={handleUserManualScroll}
             onTouchMove={handleUserManualScroll}
-            className={`p-6 sm:p-10 pr-14 sm:pr-16 max-h-[78vh] overflow-y-auto text-slate-800 dark:text-slate-200 ${fontClass}`}
+            className={`px-12 sm:px-16 py-6 sm:py-10 max-h-[78vh] overflow-y-auto text-slate-800 dark:text-slate-200 ${fontClass}`}
           >
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}

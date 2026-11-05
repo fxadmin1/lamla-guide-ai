@@ -288,7 +288,7 @@ async def proxy_website_to_nextjs(request: Request, full_path: str):
     fwd_headers = {}
     for k, v in request.headers.items():
         kl = k.lower()
-        if kl in ("host", "connection", "content-length"):
+        if kl in ("host", "connection", "content-length", "transfer-encoding"):
             continue
         fwd_headers[k] = v
     # Request uncompressed bytes over localhost loopback to avoid double gzip/gunzip
@@ -300,11 +300,24 @@ async def proxy_website_to_nextjs(request: Request, full_path: str):
             yield chunk
 
     has_body = request.method not in ("GET", "HEAD", "OPTIONS")
+    content_len = 0
+    try:
+        content_len = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        content_len = 0
+
+    if not has_body:
+        req_content = None
+    elif content_len < 10_000_000:
+        req_content = await request.body()
+    else:
+        req_content = body_stream()
+
     upstream_req = _http_client.build_request(
         method=request.method,
         url=target_url,
         headers=fwd_headers,
-        content=body_stream() if has_body else None,
+        content=req_content,
     )
     upstream_resp = await _http_client.send(upstream_req, stream=True)
 

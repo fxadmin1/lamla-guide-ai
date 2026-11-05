@@ -532,38 +532,138 @@ function buildDeterministicSummary(content: string): string {
   );
 }
 
-function buildDeterministicNotes(content: string): string {
+function extractConceptFocusFromFact(fact: string, fallbackTitle: string): string {
+  const clean = fact.replace(/^[•\-*▪▸\d.)\s]+/, "").trim();
+  const colonIdx = clean.indexOf(":");
+  if (colonIdx > 2 && colonIdx <= 55) {
+    return clean.slice(0, colonIdx).replace(/[*_`]/g, "").trim();
+  }
+  const dashMatch = clean.match(/^([A-Za-z0-9\s()/&-]{3,50})\s+(?:—|–|-)\s+/);
+  if (dashMatch) {
+    return dashMatch[1].trim();
+  }
+  const words = clean.split(/\s+/).slice(0, 6).join(" ").replace(/[.,;:]$/, "");
+  return words.length >= 4 ? words : fallbackTitle;
+}
+
+async function fetchWikipediaSummaryForTopic(query: string): Promise<string> {
+  const cleanQ = query
+    .replace(/\b(?:slide|page|lecture|topic|section|part|unit|module)\s*\d*\b/gi, "")
+    .replace(/[^a-zA-Z0-9\s()-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleanQ || cleanQ.length < 3) return "";
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2800);
+  try {
+    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(
+      cleanQ
+    )}&utf8=1&format=json&srlimit=1`;
+    const sRes = await fetch(searchUrl, {
+      headers: { "User-Agent": "LamlaGuideAI/2.0 (Educational Study Platform)" },
+      signal: controller.signal,
+    });
+    if (!sRes.ok) return "";
+    const sData = await sRes.json();
+    const firstTitle = sData?.query?.search?.[0]?.title;
+    if (!firstTitle) return "";
+
+    const sumUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(firstTitle)}`;
+    const sumRes = await fetch(sumUrl, {
+      headers: { "User-Agent": "LamlaGuideAI/2.0 (Educational Study Platform)" },
+      signal: controller.signal,
+    });
+    if (!sumRes.ok) return "";
+    const sumData = await sumRes.json();
+    return String(sumData?.extract || "").trim();
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchSlideWebNotesMap(slides: ParsedSlide[], mainTopic: string): Promise<Record<number, string>> {
+  const map: Record<number, string> = {};
+  const targets = slides.slice(0, 20);
+  await Promise.all(
+    targets.map(async (s) => {
+      const txt = await fetchWikipediaSummaryForTopic(s.title);
+      if (txt) {
+        map[s.num] = txt;
+      } else if (mainTopic && s.title.toLowerCase() !== mainTopic.toLowerCase()) {
+        const fallbackTxt = await fetchWikipediaSummaryForTopic(`${s.title} ${mainTopic}`);
+        if (fallbackTxt) map[s.num] = fallbackTxt;
+      }
+    })
+  );
+  return map;
+}
+
+function buildDetailedSlideSection(
+  s: ParsedSlide,
+  mainTopic: string,
+  nextSlide?: ParsedSlide,
+  webContext?: string
+): string {
+  const rawLines = s.body
+    .split(/\r?\n/)
+    .map((ln) => ln.replace(/^[•\-*▪▸\d.)\s]+/, "").trim())
+    .filter((ln) => ln.length >= 12 && !isInstitutionalOrBoilerplateLine(ln));
+
+  const allPoints = s.facts.length >= rawLines.length ? s.facts : rawLines.length > 0 ? rawLines : s.facts;
+
+  const bulletItems = allPoints
+    .map((pt) => `- **${extractConceptFocusFromFact(pt, s.title)}:** ${pt}`)
+    .join("\n\n");
+
+  const conceptBreakdowns = allPoints
+    .map((pt, cIdx) => {
+      const focus = extractConceptFocusFromFact(pt, s.title);
+      return (
+        `#### 🔹 Concept ${cIdx + 1}: ${focus}\n\n` +
+        `- **Core Statement from Slide:** ${pt}\n\n` +
+        `- **In-Depth Academic Explanation:** Within **${s.title}** (a key area of **${mainTopic}**), **${focus}** establishes a fundamental principle. Instead of viewing this line in isolation, note how it defines the relationship between the underlying components on **${s.label}** and explains why the system behaves this way.\n\n` +
+        `- **Step-by-Step Mechanism & Cause-Effect Logic:** First, identify the governing condition or input associated with **${focus}**. Second, trace the active mechanism described by *"${pt}"*. Third, observe the direct outcome or functional effect on **${s.title}**.\n\n` +
+        `- **Practical Example & Exam Application:** In university and SHS exams, questions on **${focus}** test whether you can accurately apply this principle to real-world scenarios and avoid common traps such as reversing cause and effect.`
+      );
+    })
+    .join("\n\n\n");
+
+  const internetBlock = webContext
+    ? `### 🌐 Internet & Textbook Knowledge Expansion (Explaining Unexplained Slide Concepts)\n\n` +
+      `${webContext}\n\n` +
+      `**How This Expands the Slide:** Because lecture slides condense **${s.title}** into brief bullet points, this external academic reference provides the deeper background mechanism, theoretical foundation, and textbook context needed for complete mastery of **${s.label}**.`
+    : `### 🌐 Internet & Textbook Knowledge Expansion (Filling Slide Gaps)\n\n` +
+      `Lecture slides often summarize **${s.title}** in brief bullet points without spelling out the full background context. In broader academic literature and real-world practice on **${mainTopic}**, **${s.title}** works by linking structural or theoretical inputs directly to measurable outcomes. Whenever a slide mentions a term, formula, or rule under **${s.title}** briefly, pay close attention to *why* the process initiates, *how* each stage progresses step by step, and *what boundary conditions* govern its behavior in examination scenarios.`;
+
+  return (
+    `## ${s.label} — ${s.title} [Source: ${s.label}]\n\n` +
+    `### 📌 Complete Slide Statements & Key Principles\n\n` +
+    `${bulletItems}\n\n` +
+    `### 🔬 Concept-by-Concept Deep Explanation (Every Slide Concept Explained in Full)\n\n` +
+    `${conceptBreakdowns}\n\n` +
+    `${internetBlock}\n\n` +
+    `### 🎯 Exam Takeaway & Slide Progression\n\n` +
+    `- **Core Exam Takeaway:** Master the exact definition, step-by-step mechanism, and directional cause-and-effect relationship of every concept on **${s.label} (${s.title})**.\n\n` +
+    (nextSlide
+      ? `- **Connection to Next Slide:** Having thoroughly unpacked **${s.title}**, we now move directly to **${nextSlide.label} (${nextSlide.title})**.\n`
+      : `- **Module Completion:** This completes the comprehensive slide-by-slide progression for **${mainTopic}**.\n`)
+  );
+}
+
+function buildDeterministicNotes(content: string, webNotesMap: Record<number, string> = {}): string {
   const slides = parseSlidesFromContent(content);
   const mainTopic = extractMainTopicTitle(slides);
 
-  const slideSections = slides.map((s, idx) => {
-    const nextSlide = slides[idx + 1];
-    const bulletItems = s.facts.map((f) => `- ${f}`).join("\n\n");
-    const primaryFact = s.facts[0] || `${s.title} is a central pillar of ${mainTopic}.`;
-    const secondaryFact =
-      s.facts[1] ||
-      `Understanding how ${s.title} operates allows you to predict how changes in system conditions affect the overall outcome.`;
-
-    return (
-      `## ${s.label} — ${s.title}\n\n` +
-      `### 📌 Key Slide Statements & Core Principles\n\n` +
-      `${bulletItems}\n\n` +
-      `### 📖 Clear Step-by-Step Academic Explanation\n\n` +
-      `At its core, **${s.title}** addresses a foundational aspect of **${mainTopic}**. ${primaryFact}\n\n` +
-      `When analyzing this concept in detail, notice the underlying mechanism: ${secondaryFact}\n\n` +
-      `### 🌐 Internet & Academic Knowledge Expansion (Filling Slide Gaps)\n\n` +
-      `Lecture slides often summarize **${s.title}** in brief bullet points without spelling out the full background context. In broader academic literature and real-world practice, **${s.title}** works by linking structural or theoretical inputs directly to measurable outcomes. Whenever a slide mentions a term or rule under **${s.title}** briefly, remember both *why* the process initiates and *what boundary conditions* govern its behavior in examination scenarios.\n\n` +
-      `### 🎯 Exam Takeaway & Transition\n\n` +
-      `- **Core Exam Takeaway:** Master the exact definition and directional cause-and-effect relationship of **${s.title}**.\n\n` +
-      (nextSlide
-        ? `- **Connection to Next Slide:** Having established **${s.title}**, we now move directly to **${nextSlide.label} (${nextSlide.title})**.\n`
-        : `- **Module Completion:** This completes the slide-by-slide progression for **${mainTopic}**.\n`)
-    );
-  });
+  const slideSections = slides.map((s, idx) =>
+    buildDetailedSlideSection(s, mainTopic, slides[idx + 1], webNotesMap[s.num])
+  );
 
   return (
     `# 📚 DETAILED SLIDE-BY-SLIDE STUDY NOTES: ${mainTopic.toUpperCase()}\n\n` +
-    `> **Focused Study Guide:** These detailed notes skip introductory school/department title pages and move systematically from one substantive slide to the next with open, breathable spacing and supplementary explanations for concepts briefly mentioned on the slides.\n\n` +
+    `> **Comprehensive Concept-by-Concept Study Guide:** These detailed notes skip introductory school/department title pages and move systematically from one substantive slide to the next with open, breathable spacing, deep explanations of every single concept on every slide, and internet/textbook expansions for concepts briefly mentioned on the slides.\n\n` +
     `---\n\n` +
     slideSections.join("\n\n---\n\n")
   );
@@ -960,7 +1060,7 @@ export async function generateStudyNotesWithAI(
   const pyData = await callPythonBackend(
     "/api/generate-notes",
     { content, subject, educational_level: educationalLevel },
-    42000
+    45000
   );
   if (pyData?.notes && String(pyData.notes).trim().length > 40) {
     return String(pyData.notes);
@@ -968,22 +1068,79 @@ export async function generateStudyNotesWithAI(
 
   const slides = parseSlidesFromContent(content);
   const mainTopic = extractMainTopicTitle(slides);
-  const systemPrompt = `You are LAMLA Guide AI's Master Textbook Author & Academic Researcher.
+  const webNotesMap = await fetchSlideWebNotesMap(slides, mainTopic);
+
+  const systemPrompt = `You are LAMLA Guide AI's Master Textbook Author, Professor & Academic Researcher.
 Target Level: ${educationalLevel}. Subject: ${mainTopic}.
 CRITICAL INSTRUCTIONS:
 1. Ignore cover/intro slides about the school, university, faculty, department, course code, or lecturer. Focus strictly on the MAIN ACADEMIC TOPIC (${mainTopic}).
-2. Move systematically from one substantive slide to the next (## Slide X — <Topic Title>).
-3. Leave generous blank lines and open spacing between paragraphs, subheadings, and bullet points so the notes never look clustered.
-4. Use broader academic and internet knowledge to thoroughly explain concepts, terms, formulas, and mechanisms that were only briefly listed or left unexplained on the slides.`;
+2. Move systematically from one substantive slide to the next (## Slide X — <Topic Title> [Source: Slide X]). Never skip a slide.
+3. Explain EVERY SINGLE CONCEPT, bullet point, term, and formula on each slide in VERY DEEP DETAIL under its own sub-heading (#### 🔹 <Concept Name>), covering its definition, step-by-step mechanism (how & why it works), and real-world/exam application.
+4. Leave generous blank lines and open spacing between every paragraph, subheading, and bullet point so the notes never look clustered.
+5. Use the provided Internet Research and broader textbook knowledge to thoroughly explain concepts that were only briefly listed or left unexplained on the slides.`;
 
   try {
-    const cleanedMaterial = slides.map((s) => s.full).join("\n\n") || content;
-    return await callGemini(
-      `Generate comprehensive, well-spaced, slide-by-slide Detailed Study Notes on ${mainTopic} with external academic explanations for any unexplained slide points:\n\n${cleanedMaterial.slice(0, 35000)}`,
-      { systemPrompt, temperature: 0.3 }
+    const batchSize = 4;
+    const batches: ParsedSlide[][] = [];
+    for (let i = 0; i < slides.length; i += batchSize) {
+      batches.push(slides.slice(i, i + batchSize));
+    }
+
+    if (batches.length === 0) {
+      return buildDeterministicNotes(content, webNotesMap);
+    }
+
+    const renderedBatches = await Promise.all(
+      batches.slice(0, 6).map(async (batchSlides) => {
+        const slideLabels = batchSlides.map((s) => s.label).join(", ");
+        const batchMaterial = batchSlides
+          .map((s) => {
+            const webExtra = webNotesMap[s.num]
+              ? `\n[Internet & Textbook Reference for ${s.label} (${s.title}): ${webNotesMap[s.num]}]`
+              : "";
+            return `${s.full}${webExtra}`;
+          })
+          .join("\n\n");
+
+        try {
+          let batchOut = await callGemini(
+            `Write ULTRA-DETAILED, openly spaced, slide-by-slide Study Notes for (${slideLabels}) on ${mainTopic}. Unpack and thoroughly explain EVERY SINGLE concept and bullet point on each slide, and use the internet/textbook reference to explain any brief or unexplained concepts:\n\n${batchMaterial}`,
+            { systemPrompt, temperature: 0.25 }
+          );
+          for (let idx = 0; idx < batchSlides.length; idx++) {
+            const sl = batchSlides[idx];
+            const regex = new RegExp(`\\b(?:Slide|Page)\\s*${sl.num}\\b`, "i");
+            if (!regex.test(batchOut)) {
+              batchOut += `\n\n---\n\n${buildDetailedSlideSection(sl, mainTopic, batchSlides[idx + 1], webNotesMap[sl.num])}`;
+            }
+          }
+          return batchOut;
+        } catch {
+          return batchSlides
+            .map((sl, idx) => buildDetailedSlideSection(sl, mainTopic, batchSlides[idx + 1], webNotesMap[sl.num]))
+            .join("\n\n---\n\n");
+        }
+      })
     );
+
+    const remainingSlides = slides.slice(24);
+    if (remainingSlides.length > 0) {
+      renderedBatches.push(
+        remainingSlides
+          .map((sl, idx) =>
+            buildDetailedSlideSection(sl, mainTopic, remainingSlides[idx + 1], webNotesMap[sl.num])
+          )
+          .join("\n\n---\n\n")
+      );
+    }
+
+    const header =
+      `# 📚 DETAILED SLIDE-BY-SLIDE STUDY NOTES: ${mainTopic.toUpperCase()}\n\n` +
+      `> **Comprehensive Concept-by-Concept Study Guide:** Each slide below is unpacked in sequence with generous spacing, deep explanations of every concept on the slide, and internet/textbook expansions for concepts briefly mentioned on the slides.\n\n---\n\n`;
+
+    return header + renderedBatches.join("\n\n---\n\n");
   } catch {
-    return buildDeterministicNotes(content);
+    return buildDeterministicNotes(content, webNotesMap);
   }
 }
 

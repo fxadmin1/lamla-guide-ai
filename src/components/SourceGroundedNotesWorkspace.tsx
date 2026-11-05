@@ -135,6 +135,15 @@ export default function SourceGroundedNotesWorkspace({
 
   const scrollToHeading = (id: string) => {
     const target = document.getElementById(id);
+    const container = containerRef.current;
+    if (target && container && container.scrollHeight > container.clientHeight + 16) {
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const nextTop = container.scrollTop + (targetRect.top - containerRect.top) - 24;
+      container.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" });
+      setActiveHeadingId(id);
+      return;
+    }
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
       setActiveHeadingId(id);
@@ -434,9 +443,14 @@ export default function SourceGroundedNotesWorkspace({
             )}
           </div>
 
-          <span className="text-xs text-slate-500">
-            {readProgress}% read
-          </span>
+          <div className="w-full sm:w-72">
+            <FastScrollHandle
+              scrollContainerRef={containerRef}
+              orientation="horizontal"
+              label="Top Notes Hold and Drag Scroll Bar"
+              onProgressChange={setReadProgress}
+            />
+          </div>
         </div>
       </div>
 
@@ -454,12 +468,12 @@ export default function SourceGroundedNotesWorkspace({
               </span>
             </div>
 
-            <div className="w-full h-1 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-blue-600 rounded-full transition-all duration-200"
-                style={{ width: `${readProgress}%` }}
-              />
-            </div>
+            <FastScrollHandle
+              scrollContainerRef={containerRef}
+              orientation="horizontal"
+              label="Left Contents Hold and Drag Scroll Bar"
+              onProgressChange={setReadProgress}
+            />
 
             {headings.length > 6 && (
               <input
@@ -498,16 +512,30 @@ export default function SourceGroundedNotesWorkspace({
           </nav>
         </aside>
 
-        {/* Main Content + Draggable Fast-Scroll Handle */}
+        {/* Main Content + Left & Right Draggable Fast-Scroll Handles */}
         <div className="lg:col-span-8 xl:col-span-9 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 relative overflow-hidden">
-          <div className="absolute right-2 sm:right-3.5 top-1/2 -translate-y-1/2 z-30">
-            <FastScrollHandle scrollContainerRef={containerRef} label="Detailed Notes Fast Scroll" />
+          <div className="absolute left-1.5 sm:left-2.5 top-1/2 -translate-y-1/2 z-30">
+            <FastScrollHandle
+              scrollContainerRef={containerRef}
+              side="left"
+              label="Detailed Notes Left Fast Scroll"
+              onProgressChange={setReadProgress}
+            />
+          </div>
+
+          <div className="absolute right-1.5 sm:right-2.5 top-1/2 -translate-y-1/2 z-30">
+            <FastScrollHandle
+              scrollContainerRef={containerRef}
+              side="right"
+              label="Detailed Notes Right Fast Scroll"
+              onProgressChange={setReadProgress}
+            />
           </div>
 
           <div
             ref={containerRef}
             onScroll={handleScroll}
-            className="p-6 sm:p-10 pr-14 sm:pr-16 max-h-[82vh] overflow-y-auto"
+            className="px-12 sm:px-16 py-6 sm:py-10 max-h-[82vh] overflow-y-auto"
           >
             <div className={`text-slate-800 dark:text-slate-200 ${fontClass}`}>
               <ReactMarkdown
