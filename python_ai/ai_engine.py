@@ -1082,41 +1082,90 @@ Target Audience: {educational_level}.
 Primary Academic Topic: {main_topic}.
 
 MANDATORY REQUIREMENTS:
-1. FOCUS 100% ON THE MAIN ACADEMIC TOPIC ({main_topic}):
+1. WRITE IN FULL, FLOWING SENTENCES AND COHESIVE PARAGRAPHS (NO BULLET POINTS!):
+   - Do NOT write bullet-point lists (`-`, `*`, `•`). A true summary must be written in complete, well-connected sentences and flowing prose paragraphs that actually summarize and synthesize the material.
+   - Weave definitions, mechanisms, cause-and-effect relationships, and practical applications into smooth, readable academic prose with clear transitions from one idea to the next.
+2. FOCUS 100% ON THE MAIN ACADEMIC TOPIC ({main_topic}):
    - Completely IGNORE any school name, university, faculty, department, course code, lecturer name, welcome remarks, or table of contents.
    - Start immediately with the core academic subject matter and synthesize EVERYTHING across all substantive slides from start to finish.
-2. GENEROUS VISUAL SPACING:
-   - Leave clear blank lines between paragraphs, sub-sections, and bullet points so the summary is airy, well-spaced, and easy to read and scroll through quickly.
-3. CLEAR VISUAL CONCEPT DIAGRAM:
+3. GENEROUS VISUAL SPACING:
+   - Leave a clear blank line (`\\n\\n`) between every paragraph and sub-section so the prose summary is airy, well-spaced, and easy to read and scroll through quickly.
+4. CLEAR VISUAL CONCEPT DIAGRAM:
    - Include ONE clean, accurate, standalone labeled `<svg>` diagram inside a ```svg code block (`viewBox="0 0 760 300"`, `#ffffff` background, `#2563eb` accents, dark `#0f172a` labels) illustrating the overarching framework of {main_topic}.
-4. STRUCTURED SECTIONS:
+5. STRUCTURED PROSE SECTIONS:
    - `# Complete Study Summary: {main_topic}`
-   - `## 1. Main Topic & Executive Synthesis of Everything` (2–3 well-spaced paragraphs uniting all concepts in the lecture)
-   - `## 2. Labeled Concept Architecture` (the ```svg diagram + concise walkthrough)
-   - `## 3. Complete Topic-by-Topic Breakdown Across the Material` (comprehensive synthesis of every major topic/section with generous spacing between bullet points)
+   - `## 1. Executive Narrative Summary of the Entire Material` (3–4 well-spaced, flowing paragraphs written in complete sentences that synthesize the entire lecture from beginning to end)
+   - `## 2. Labeled Concept Architecture` (the ```svg diagram + a cohesive paragraph explaining how the components interact)
+   - `## 3. Comprehensive Thematic Synthesis Across All Sections` (for each major theme/topic across the slides, write 1–2 rich, flowing prose paragraphs in full sentences explaining the core concepts, mechanisms, and how they connect — NO bullet lists)
    - `## 4. High-Yield Definitions, Laws & Mechanisms Table` (Markdown table: Key Term / Principle | Core Meaning & Mechanism | Practical / Exam Significance)
-   - `## 5. End-to-End Process Flow & Key Exam Takeaways` (clean ```flowchart block + high-yield takeaways)"""
+   - `## 5. End-to-End Process Flow & Concluding Synthesis` (clean ```flowchart block followed by 1–2 concluding prose paragraphs summarizing the key takeaways and exam relationships in full sentences)"""
+
+        def _ensure_prose_paragraphs(text_md: str) -> str:
+            """Converts stray bullet lines outside tables/code blocks into flowing prose sentences."""
+            out_lines: List[str] = []
+            bullet_buffer: List[str] = []
+            in_code = False
+
+            def _flush_bullets() -> None:
+                if not bullet_buffer:
+                    return
+                sentences = []
+                for b in bullet_buffer:
+                    s = b.strip()
+                    if not s:
+                        continue
+                    if not s.endswith((".", "!", "?")):
+                        s += "."
+                    sentences.append(s)
+                if sentences:
+                    out_lines.append(" ".join(sentences))
+                    out_lines.append("")
+                bullet_buffer.clear()
+
+            for raw_ln in text_md.splitlines():
+                stripped = raw_ln.strip()
+                if stripped.startswith("```"):
+                    _flush_bullets()
+                    in_code = not in_code
+                    out_lines.append(raw_ln)
+                    continue
+                if in_code or stripped.startswith("|") or stripped.startswith("#"):
+                    _flush_bullets()
+                    out_lines.append(raw_ln)
+                    continue
+                m_bullet = re.match(r"^(?:[-*•▪▸]|\d+[.)])\s+(.+)$", stripped)
+                if m_bullet:
+                    cleaned_item = re.sub(r"\*\*([^*]+)\*\*:\s*", r"**\1** — ", m_bullet.group(1).strip())
+                    bullet_buffer.append(cleaned_item)
+                else:
+                    if stripped == "" and bullet_buffer:
+                        continue
+                    _flush_bullets()
+                    out_lines.append(raw_ln)
+            _flush_bullets()
+            return re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
 
         try:
             if len(chunks) == 1:
-                return self.execute_ai_completion(
-                    f"Create a complete, well-spaced Master Study Summary of everything on the main topic ({main_topic}):\n\n{chunks[0]}{web_context}",
+                raw_summary = self.execute_ai_completion(
+                    f"Write a complete, well-spaced Master Study Summary of everything on the main topic ({main_topic}) using full, flowing sentences and cohesive prose paragraphs (do NOT use bullet points):\n\n{chunks[0]}{web_context}",
                     system_prompt=system,
                     temperature=0.28,
                 )
+                return _ensure_prose_paragraphs(raw_summary)
 
             with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
                 futs = [
                     pool.submit(
                         self.execute_ai_completion,
-                        f"Create a complete study summary for Part {i} of {len(chunks)} on {main_topic}:\n\n{chunk}{web_context if i == 1 else ''}",
+                        f"Write a complete prose study summary in full sentences and paragraphs (no bullet points) for Part {i} of {len(chunks)} on {main_topic}:\n\n{chunk}{web_context if i == 1 else ''}",
                         system,
                         False,
                         0.28,
                     )
                     for i, chunk in enumerate(chunks, 1)
                 ]
-                parts = [f.result() for f in futs]
+                parts = [_ensure_prose_paragraphs(f.result()) for f in futs]
             return "\n\n---\n\n".join(parts)
         except Exception:
             svg = build_labeled_concept_svg(
@@ -1130,37 +1179,61 @@ MANDATORY REQUIREMENTS:
                 "| Key Concept / Topic | Core Principle & Mechanism | Exam & Practical Significance |",
                 "| :--- | :--- | :--- |",
             ]
-            for s in slides:
+            transitions = [
+                "At the foundation of this section,",
+                "Building directly upon these principles,",
+                "Furthermore, in the progression of this topic,",
+                "From an operational and mechanistic standpoint,",
+                "Integrating these concepts further,",
+            ]
+            for idx, s in enumerate(slides):
                 s_facts = self._extract_slide_facts(s)
-                bullet_lines = "\n\n".join(f"- {f}" for f in s_facts[:5])
-                thematic_sections.append(f"### {s['title']} `[{s['label']}]`\n\n{bullet_lines}")
+                norm_sentences = []
+                for f in s_facts[:5]:
+                    clean_f = f.strip()
+                    if not clean_f.endswith((".", "!", "?")):
+                        clean_f += "."
+                    norm_sentences.append(clean_f)
+                lead_in = transitions[idx % len(transitions)]
+                para_1 = f"{lead_in} **{s['title']}** establishes a central pillar of **{main_topic}**. {' '.join(norm_sentences[:3])}"
+                para_2 = (
+                    f"{' '.join(norm_sentences[3:])} Together, these principles explain how **{s['title']}** functions within the broader system and how its mechanisms link directly to subsequent stages of the lecture."
+                    if len(norm_sentences) > 3
+                    else f"Understanding how **{s['title']}** operates in practice enables students to trace cause-and-effect relationships accurately across **{main_topic}**."
+                )
+                thematic_sections.append(f"### {s['title']}\n\n{para_1}\n\n{para_2}")
                 primary_fact = s_facts[0].replace("|", "/")[:140]
                 focus_term = self._extract_concept_focus(s_facts[0], s["title"]).replace("|", "/")
                 table_rows.append(f"| **{focus_term}** | {primary_fact} | Core examinable principle ({s['title'][:32]}) |")
 
             flow_steps = " ---> ".join(f"[{s['title'][:28]}]" for s in slides[:6]) or f"[{main_topic}]"
-            web_note = (
-                f"\n\n---\n\n## 6. Internet-Enriched Academic Context\n\n{enrichment['knowledge_brief']}"
-                if enrichment.get("knowledge_brief")
-                else ""
+            web_brief_txt = str(enrichment.get("knowledge_brief") or "").strip()
+            exec_para_2 = (
+                f"{web_brief_txt}\n\n"
+                if web_brief_txt
+                else (
+                    f"Throughout the lecture, the material progresses systematically from foundational definitions to active mechanisms and real-world applications. Rather than treating individual concepts in isolation, this summary weaves every major section into a continuous narrative so you can grasp the big picture at a glance.\n\n"
+                )
             )
             return (
                 f"# Complete Study Summary: {main_topic}\n\n"
-                f"## 1. Main Topic & Executive Synthesis of Everything\n\n"
-                f"This complete study summary covers **{main_topic}** across all **{slide_count} substantive sections** ({overview_topics}).\n\n"
-                f"Every key definition, underlying mechanism, and practical relationship across the entire material is synthesized below with clear spacing for rapid revision.\n\n"
+                f"## 1. Executive Narrative Summary of the Entire Material\n\n"
+                f"This comprehensive study summary synthesizes the entire lecture on **{main_topic}** across all **{slide_count} substantive sections**, encompassing {overview_topics}. By focusing strictly on the core academic subject matter, it connects the primary definitions, underlying mechanisms, and practical outcomes into a unified narrative.\n\n"
+                f"{exec_para_2}"
                 f"---\n\n"
                 f"## 2. Labeled Concept Architecture\n\n"
                 f"```svg\n{svg}\n```\n\n"
+                f"The conceptual architecture above illustrates how the foundational elements of **{main_topic}** feed into intermediate mechanisms and culminate in measurable practical and examination outcomes.\n\n"
                 f"---\n\n"
-                f"## 3. Complete Topic-by-Topic Breakdown Across the Material\n\n"
+                f"## 3. Comprehensive Thematic Synthesis Across All Sections\n\n"
                 f"{chr(10) + chr(10) + ('\n\n---\n\n'.join(thematic_sections))}\n\n"
                 f"---\n\n"
                 f"## 4. High-Yield Definitions, Laws & Mechanisms Table\n\n"
                 f"{chr(10).join(table_rows)}\n\n"
                 f"---\n\n"
-                f"## 5. End-to-End Process Flow & Key Exam Takeaways\n\n"
-                f"```flowchart\n{flow_steps}\n```{web_note}"
+                f"## 5. End-to-End Process Flow & Concluding Synthesis\n\n"
+                f"```flowchart\n{flow_steps}\n```\n\n"
+                f"In conclusion, mastering **{main_topic}** requires understanding how each stage in the progression above influences the next. When reviewing for examinations, focus on the directional cause-and-effect relationships between these concepts and how changes in initial conditions alter the final outcome."
             )
 
     # ─────────────────────────────────────────────────────────────

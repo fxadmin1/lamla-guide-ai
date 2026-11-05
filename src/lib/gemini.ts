@@ -489,14 +489,80 @@ function invertFactToPlausibleMisconception(fact: string, slideTitle: string, va
   return templates[variant % templates.length];
 }
 
-function buildDeterministicSummary(content: string): string {
+function convertBulletsToFlowingProse(markdown: string): string {
+  const outLines: string[] = [];
+  const bulletBuffer: string[] = [];
+  let inCode = false;
+
+  const flushBullets = () => {
+    if (bulletBuffer.length === 0) return;
+    const sentences = bulletBuffer
+      .map((b) => {
+        let s = b.trim();
+        if (!s) return "";
+        if (!/[.!?]$/.test(s)) s += ".";
+        return s;
+      })
+      .filter(Boolean);
+    if (sentences.length > 0) {
+      outLines.push(sentences.join(" "));
+      outLines.push("");
+    }
+    bulletBuffer.length = 0;
+  };
+
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const stripped = rawLine.trim();
+    if (stripped.startsWith("```")) {
+      flushBullets();
+      inCode = !inCode;
+      outLines.push(rawLine);
+      continue;
+    }
+    if (inCode || stripped.startsWith("|") || stripped.startsWith("#")) {
+      flushBullets();
+      outLines.push(rawLine);
+      continue;
+    }
+    const bulletMatch = stripped.match(/^(?:[-*•▪▸]|\d+[.)])\s+(.+)$/);
+    if (bulletMatch) {
+      const cleaned = bulletMatch[1].trim().replace(/\*\*([^*]+)\*\*:\s*/g, "**$1** — ");
+      bulletBuffer.push(cleaned);
+    } else {
+      if (stripped === "" && bulletBuffer.length > 0) continue;
+      flushBullets();
+      outLines.push(rawLine);
+    }
+  }
+  flushBullets();
+  return outLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildDeterministicSummary(content: string, mainTopicWebBrief: string = ""): string {
   const slides = parseSlidesFromContent(content);
   const mainTopic = extractMainTopicTitle(slides);
 
-  const pillarBlocks = slides.map((s) => {
-    const topFacts = s.facts.slice(0, 3);
-    const bulletText = topFacts.map((f) => `  - ${f}`).join("\n\n");
-    return `### 📌 ${s.label} — ${s.title}\n\n${bulletText}`;
+  const transitions = [
+    "At the foundation of this subject,",
+    "Building directly upon these principles,",
+    "Furthermore, as the lecture progresses,",
+    "From a mechanistic and operational standpoint,",
+    "Integrating these concepts into practice,",
+  ];
+
+  const narrativeSections = slides.map((s, idx) => {
+    const cleanSentences = s.facts.slice(0, 5).map((f) => {
+      const t = f.trim();
+      return /[.!?]$/.test(t) ? t : `${t}.`;
+    });
+    const lead = transitions[idx % transitions.length];
+    const firstPara = `${lead} **${s.title}** represents a vital component of **${mainTopic}**. ${cleanSentences.slice(0, 3).join(" ")}`;
+    const secondPara =
+      cleanSentences.length > 3
+        ? `${cleanSentences.slice(3).join(" ")} Together, these relationships explain how **${s.title}** operates within the broader academic framework and prepares the foundation for subsequent stages of the material.`
+        : `By understanding the underlying mechanism of **${s.title}**, you can trace how changes in initial conditions directly shape the resulting system behavior across **${mainTopic}**.`;
+
+    return `### ${s.title}\n\n${firstPara}\n\n${secondPara}`;
   });
 
   const tableRows = slides.slice(0, 16).map((s) => {
@@ -510,25 +576,28 @@ function buildDeterministicSummary(content: string): string {
     .map((s) => `[${s.title.slice(0, 28)}]`)
     .join(" ──▶ ");
 
+  const overviewTopics = slides.slice(0, 8).map((s) => s.title).join(", ") || mainTopic;
+  const webParagraph = mainTopicWebBrief
+    ? `${mainTopicWebBrief}\n\n`
+    : `Across the entire lecture, the concepts progress systematically from foundational definitions to active mechanisms and real-world applications. Rather than listing isolated fragments, this summary connects every section into flowing, readable prose so you can understand how the entire subject fits together.\n\n`;
+
   return (
     `# 🧭 COMPREHENSIVE MASTER SUMMARY: ${mainTopic.toUpperCase()}\n\n` +
-    `## 1. 🌐 Complete Executive Synthesis of the Main Topic\n\n` +
-    `This comprehensive summary synthesizes the entire subject matter on **${mainTopic}** across all **${slides.length} substantive lecture slides**, bypassing introductory institutional cover pages to focus strictly on core definitions, mechanisms, causal pathways, and examinable principles.\n\n` +
+    `## 1. 🌐 Executive Narrative Synthesis of the Main Topic\n\n` +
+    `This comprehensive study summary synthesizes the entire subject matter on **${mainTopic}** across all **${slides.length} substantive sections** (${overviewTopics}), bypassing introductory institutional cover pages to focus strictly on core definitions, mechanisms, causal pathways, and examinable principles.\n\n` +
+    `${webParagraph}` +
     `---\n\n` +
-    `## 2. 🏛️ Complete Slide-by-Slide Core Synthesis\n\n` +
-    `${pillarBlocks.join("\n\n\n")}\n\n` +
+    `## 2. 🏛️ Complete Thematic Narrative Across the Material\n\n` +
+    `${narrativeSections.join("\n\n\n")}\n\n` +
     `---\n\n` +
     `## 3. 🔑 Master High-Yield Glossary & Concept Matrix\n\n` +
     `| Core Concept / Sub-Topic | Formal Definition & Mechanism | Key Exam Takeaway |\n` +
     `| :--- | :--- | :--- |\n` +
     `${tableRows.join("\n")}\n\n` +
     `---\n\n` +
-    `## 4. 📊 End-to-End Conceptual Progression\n\n` +
+    `## 4. 📊 End-to-End Conceptual Progression & Concluding Synthesis\n\n` +
     `\`\`\`flowchart\n${flowChain || `[${mainTopic}]`}\n\`\`\`\n\n` +
-    `---\n\n` +
-    `## 5. ⚠️ High-Priority Exam Pitfalls & Rapid Revision Checklist\n\n` +
-    `- **Cause-and-Effect Precision:** Examiners frequently test whether you can distinguish the primary mechanism of **${mainTopic}** from secondary effects.\n\n` +
-    `- ** Comparative Distinctions:** Review how each slide's concept transitions into the next stage so you can answer both Multiple Choice and Assertion-Reasoning questions effortlessly.\n`
+    `In conclusion, mastering **${mainTopic}** requires understanding how each concept transitions smoothly into the next stage of the process. Examiners frequently test whether you can distinguish the primary causal mechanism of **${mainTopic}** from secondary effects, as well as how boundary conditions govern its real-world behavior in both Multiple Choice and Assertion-Reasoning questions.\n`
   );
 }
 
@@ -917,25 +986,30 @@ export async function generateSummaryWithAI(
     38000
   );
   if (pyData?.summary && String(pyData.summary).trim().length > 40) {
-    return String(pyData.summary);
+    return convertBulletsToFlowingProse(String(pyData.summary));
   }
+
+  const mainTopicWebBrief = await fetchWikipediaSummaryForTopic(mainTopic);
 
   const systemPrompt = `You are LAMLA Guide AI's Chief Educational Synthesizer and Revision Architect.
 Slogan: "It's Never Too Late To Study."
 Target Audience: ${educationalLevel}. Requested Style: ${style}.
 CRITICAL RULES:
-1. Ignore introductory cover slides about the school, university, department, course code, lecturer name, or table of contents. Focus 100% on the MAIN ACADEMIC TOPIC (${mainTopic}).
-2. Synthesize a complete, comprehensive summary of EVERYTHING across all substantive slides so the student gets the full picture in one place.
-3. Leave generous blank lines between paragraphs, headings, and bullet points so the summary is clean, airy, and easy to scroll through rapidly.`;
+1. WRITE IN FULL, FLOWING SENTENCES AND COHESIVE PARAGRAPHS — DO NOT USE BULLET POINTS (-, *, •)!
+2. A summary must read like a true executive and textbook synthesis written in connected sentences and well-structured paragraphs that explain how all concepts in the lecture fit together from beginning to end.
+3. Ignore introductory cover slides about the school, university, department, course code, lecturer name, or table of contents. Focus 100% on the MAIN ACADEMIC TOPIC (${mainTopic}).
+4. Leave generous blank lines (\\n\\n) between paragraphs and section headings so the prose summary is clean, airy, and easy to scroll through rapidly.`;
 
   try {
     const cleanedMaterial = slides.map((s) => s.full).join("\n\n") || content;
-    return await callGemini(
-      `Synthesize a comprehensive, well-spaced Master Summary of EVERYTHING on the main topic (${mainTopic}) across all substantive slides:\n\n${cleanedMaterial.slice(0, 35000)}`,
+    const webAddendum = mainTopicWebBrief ? `\n\nExternal Academic Reference:\n${mainTopicWebBrief}` : "";
+    const aiOut = await callGemini(
+      `Write a comprehensive, well-spaced Master Summary of EVERYTHING on the main topic (${mainTopic}) in full, flowing sentences and cohesive prose paragraphs (do NOT use bullet points):\n\n${cleanedMaterial.slice(0, 35000)}${webAddendum}`,
       { systemPrompt, temperature: 0.3 }
     );
+    return convertBulletsToFlowingProse(aiOut);
   } catch {
-    return buildDeterministicSummary(content);
+    return buildDeterministicSummary(content, mainTopicWebBrief);
   }
 }
 

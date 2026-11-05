@@ -29,6 +29,56 @@ interface StudyContentRendererProps {
   sourceType?: "summary" | "detailed_notes";
 }
 
+function formatSummaryAsFlowingProse(markdown: string): string {
+  if (!markdown) return "";
+  const outLines: string[] = [];
+  const bulletBuffer: string[] = [];
+  let inCode = false;
+
+  const flushBullets = () => {
+    if (bulletBuffer.length === 0) return;
+    const sentences = bulletBuffer
+      .map((b) => {
+        let s = b.trim();
+        if (!s) return "";
+        if (!/[.!?]$/.test(s)) s += ".";
+        return s;
+      })
+      .filter(Boolean);
+    if (sentences.length > 0) {
+      outLines.push(sentences.join(" "));
+      outLines.push("");
+    }
+    bulletBuffer.length = 0;
+  };
+
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const stripped = rawLine.trim();
+    if (stripped.startsWith("```")) {
+      flushBullets();
+      inCode = !inCode;
+      outLines.push(rawLine);
+      continue;
+    }
+    if (inCode || stripped.startsWith("|") || stripped.startsWith("#")) {
+      flushBullets();
+      outLines.push(rawLine);
+      continue;
+    }
+    const bulletMatch = stripped.match(/^(?:[-*•▪▸]|\d+[.)])\s+(.+)$/);
+    if (bulletMatch) {
+      const cleaned = bulletMatch[1].trim().replace(/\*\*([^*]+)\*\*:\s*/g, "**$1** — ");
+      bulletBuffer.push(cleaned);
+    } else {
+      if (stripped === "" && bulletBuffer.length > 0) continue;
+      flushBullets();
+      outLines.push(rawLine);
+    }
+  }
+  flushBullets();
+  return outLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export default function StudyContentRenderer({
   content,
   title,
@@ -40,14 +90,18 @@ export default function StudyContentRenderer({
   const [fontSize, setFontSize] = useState<"normal" | "large" | "compact">("normal");
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
+  const renderedContent = React.useMemo(() => {
+    return sourceType === "summary" ? formatSummaryAsFlowingProse(content) : content;
+  }, [content, sourceType]);
+
   const { playTrack, playSection, session, isPlaying, pause, getSavedBookmark } = useAudioPlayer();
 
   const effectiveTitle = title || (sourceType === "detailed_notes" ? "Detailed Notes" : "Summary");
   const savedBookmark = getSavedBookmark(effectiveTitle, sourceType);
 
   const chunks: SpeechChunk[] = React.useMemo(() => {
-    return createSpeechChunks(content);
-  }, [content]);
+    return createSpeechChunks(renderedContent);
+  }, [renderedContent]);
 
   const userScrolledRef = React.useRef(false);
   const scrollTimerRef = React.useRef<NodeJS.Timeout | null>(null);
@@ -427,7 +481,7 @@ export default function StudyContentRenderer({
                 hr: () => <hr className="my-9 border-slate-200 dark:border-slate-800" />,
               }}
             >
-              {normalizeInlineSvgBlocks(content)}
+              {normalizeInlineSvgBlocks(renderedContent)}
             </ReactMarkdown>
           </div>
         </div>
