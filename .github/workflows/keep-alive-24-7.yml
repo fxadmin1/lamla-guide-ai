@@ -11,12 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Ping LAMLA Guide AI Unified Health Endpoint
+      - name: Ping LAMLA Guide AI Unified Health & Version Endpoints
         env:
-          TARGET_URL: ${{ vars.PUBLIC_APP_URL || 'https://lamlaguide.onrender.com' }}
+          TARGET_URL: ${{ vars.PUBLIC_APP_URL || 'https://lamla-guide-ai.onrender.com' }}
         run: |
           echo "Pinging ${TARGET_URL}/health to guarantee 24/7 uninterrupted uptime..."
           curl -fsSL --retry 2 --max-time 25 "${TARGET_URL}/health" || true
-          curl -fsSL --retry 1 --max-time 15 "https://lamla-guide-ai.onrender.com/health" || true
           echo ""
           echo "Keep-alive ping completed."

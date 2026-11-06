@@ -38,9 +38,15 @@ if str(ROOT_DIR) not in sys.path:
 
 
 def load_env_files():
-    """Load .env and .env.local into os.environ without overriding explicit host env vars."""
+    """Load .env (and .env.local in development only) without overriding explicit host env vars."""
+    is_prod = (
+        os.environ.get("RENDER") == "true"
+        or os.environ.get("NODE_ENV") == "production"
+        or os.environ.get("LAMLA_ENV") == "production"
+    )
+    candidates = (".env",) if is_prod else (".env", ".env.local")
     file_vars = {}
-    for name in (".env", ".env.local"):
+    for name in candidates:
         path = ROOT_DIR / name
         if path.exists():
             for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -119,6 +125,8 @@ def ensure_nextjs_build():
     if DEV_MODE:
         return
     build_id = ROOT_DIR / ".next" / "BUILD_ID"
+    if os.environ.get("LAMLA_PREBUILT") == "1" and build_id.exists() and not FORCE_BUILD:
+        return
     if build_id.exists() and not FORCE_BUILD and not _is_build_stale(build_id):
         return
 
@@ -196,6 +204,7 @@ def _spawn_next_process() -> subprocess.Popen:
         cmd = [node_bin, str(next_cli), "dev", "--webpack", "-p", str(NEXT_INTERNAL_PORT), "-H", "127.0.0.1"]
         mode_label = "DEVELOPMENT"
     else:
+        child_env.setdefault("NODE_OPTIONS", "--max-old-space-size=256")
         cmd = [node_bin, str(next_cli), "start", "-p", str(NEXT_INTERNAL_PORT), "-H", "127.0.0.1"]
         mode_label = "PRODUCTION"
 
@@ -251,7 +260,7 @@ async def _unified_lifespan(app_instance):
     ensure_nextjs_build()
     _next_proc = _spawn_next_process()
 
-    await _wait_for_port("127.0.0.1", NEXT_INTERNAL_PORT, timeout_sec=45.0 if DEV_MODE else 25.0)
+    await _wait_for_port("127.0.0.1", NEXT_INTERNAL_PORT, timeout_sec=90.0)
 
     _http_client = httpx.AsyncClient(
         base_url=f"http://127.0.0.1:{NEXT_INTERNAL_PORT}",

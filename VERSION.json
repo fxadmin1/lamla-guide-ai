@@ -1,0 +1,24 @@
+{
+  "version": "2.4.0",
+  "release_name": "Advanced Academic Intelligence & Production Sync Engine",
+  "release_date": "2026-11-06",
+  "production_domain": "https://lamla-guide-ai.onrender.com",
+  "repository": "https://github.com/fxadmin1/lamla-guide-ai",
+  "pwa_cache_version": "lamla-cache-v4-20261106",
+  "migrations_included": [
+    "20261009_security_and_storage.sql",
+    "20261010_scale_and_performance_indexes.sql",
+    "20261012_educational_video_recommendations.sql",
+    "20261012_presentations_studio.sql",
+    "20261012_study_routines_and_notifications.sql",
+    "20261013_class_groups_and_collaboration.sql",
+    "20261013_exam_tracker_and_collaboration_refinement.sql",
+    "20261106_academic_engine_and_rls_verification.sql"
+  ],
+  "components": {
+    "frontend": "Next.js 16.4.3 (React 19.3)",
+    "python_backend": "FastAPI Unified Academic Intelligence Engine",
+    "database": "Supabase PostgreSQL with Row Level Security",
+    "hosting": "Render Docker Unified Service (lamla-guide-ai)"
+  }
+}

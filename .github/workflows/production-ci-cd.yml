@@ -1,0 +1,95 @@
+name: LAMLA Guide AI — Production CI/CD & Live Verification
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: lamla-production-pipeline
+  cancel-in-progress: false
+
+jobs:
+  verify-and-build:
+    name: 1. Test Python AI + Security + Build Next.js
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: python_ai/requirements.txt
+
+      - name: Install Python backend dependencies
+        run: pip install -r python_ai/requirements.txt
+
+      - name: Run Academic System, Security Isolation & 5-Feature QA Suites
+        run: |
+          python python_ai/test_system.py
+          python python_ai/test_security_isolation.py
+          python python_ai/test_five_features_upgrade.py
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install Website dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify TypeScript & Production Webpack Bundle
+        env:
+          LAMLA_LOW_MEM_BUILD: "1"
+          NODE_OPTIONS: "--max-old-space-size=1536"
+          NEXT_TELEMETRY_DISABLED: "1"
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || 'https://lsisntjpiscwnwdqbebo.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxzaXNudGpwaXNjd253ZHFiZWJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1NTAyMzksImV4cCI6MjEwNzEyNjIzOX0.CAHFOOexNM3yci3r6UmIOvgm1fwafzYcG2M34ktcY6g' }}
+        run: |
+          npx tsc --noEmit
+          npm run build
+
+  deploy-and-verify-production:
+    name: 2. Trigger Production Deploy & Verify Live Domain
+    needs: verify-and-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install verification HTTP client
+        run: pip install requests
+
+      - name: Trigger Render Deploy Hook (if configured)
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "Triggering Render production deploy hook..."
+            curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
+            echo ""
+          else
+            echo "RENDER_DEPLOY_HOOK_URL secret not set — relying on Render GitHub Auto-Deploy."
+          fi
+
+      - name: Poll & Verify Live Production Website
+        env:
+          PRODUCTION_URL: ${{ vars.PUBLIC_APP_URL || 'https://lamla-guide-ai.onrender.com' }}
+        run: |
+          python python_ai/verify_production_live.py \
+            --url "$PRODUCTION_URL" \
+            --expected-version "2.4.0" \
+            --expected-commit "${{ github.sha }}" \
+            --wait-seconds 540

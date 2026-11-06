@@ -35,12 +35,21 @@ const securityHeaders = [
   },
 ];
 
+const isLowMemCloudBuild =
+  process.env.LAMLA_LOW_MEM_BUILD === "1" ||
+  process.env.RENDER === "true" ||
+  process.env.CI === "true";
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   compress: true,
+  productionBrowserSourceMaps: false,
   experimental: {
     optimizePackageImports: ["lucide-react"],
+    webpackMemoryOptimizations: true,
+    serverSourceMaps: false,
+    ...(isLowMemCloudBuild ? { cpus: 1, workerThreads: false } : {}),
   },
   async headers() {
     return [

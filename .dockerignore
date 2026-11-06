@@ -1,7 +1,14 @@
 node_modules
 .next
+.venv
 .cache
 scratch
 python_ai/__pycache__
+**/__pycache__
+*.pyc
 *.log
 .git
+.env
+.env.*
+!.env.example
+tsconfig.tsbuildinfo

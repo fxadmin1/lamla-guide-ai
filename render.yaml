@@ -1,14 +1,19 @@
 services:
   - type: web
-    name: lamlaguide
+    name: lamla-guide-ai
     runtime: docker
     plan: free
+    autoDeploy: true
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
+      - key: LAMLA_ENV
+        value: production
       - key: NEXT_PUBLIC_SUPABASE_URL
         value: https://lsisntjpiscwnwdqbebo.supabase.co
       - key: NEXT_PUBLIC_ADMIN_SUPPORT_EMAIL
+        value: bismarkanadjei@gmail.com
+      - key: ADMIN_EMAIL
         value: bismarkanadjei@gmail.com
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false

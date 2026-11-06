@@ -25,8 +25,14 @@ _THIS_DIR = Path(__file__).parent.resolve()
 _ROOT_DIR = _THIS_DIR.parent
 sys.path.insert(0, str(_THIS_DIR))
 
-# Auto-load .env and .env.local so Python & Next.js share identical credentials
-for _env_name in (".env", ".env.local"):
+# Auto-load .env (and .env.local in development only) without overriding explicit host env vars
+_IS_PRODUCTION_ENV = (
+    os.environ.get("RENDER") == "true"
+    or os.environ.get("NODE_ENV") == "production"
+    or os.environ.get("LAMLA_ENV") == "production"
+)
+_env_candidates = (".env",) if _IS_PRODUCTION_ENV else (".env", ".env.local")
+for _env_name in _env_candidates:
     _env_file = _ROOT_DIR / _env_name
     if _env_file.exists():
         for _line in _env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -38,6 +44,57 @@ for _env_name in (".env", ".env.local"):
             _v = _v.strip().strip('"').strip("'")
             if _k and _k not in os.environ:
                 os.environ[_k] = _v
+
+
+def _load_version_metadata() -> Dict[str, Any]:
+    version_file = _ROOT_DIR / "VERSION.json"
+    meta: Dict[str, Any] = {
+        "version": "2.4.0",
+        "release_name": "Advanced Academic Intelligence & Production Sync Engine",
+        "release_date": "2026-11-06",
+        "production_domain": "https://lamla-guide-ai.onrender.com",
+        "pwa_cache_version": "lamla-cache-v4-20261106",
+        "migrations_included": [],
+    }
+    try:
+        if version_file.exists():
+            meta.update(json.loads(version_file.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return meta
+
+
+def _resolve_commit_sha() -> str:
+    for key in ("RENDER_GIT_COMMIT", "GIT_COMMIT_SHA", "COMMIT_SHA", "VERCEL_GIT_COMMIT_SHA"):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            return val[:12]
+    head_file = _ROOT_DIR / ".git" / "HEAD"
+    try:
+        if head_file.exists():
+            ref = head_file.read_text(encoding="utf-8").strip()
+            if ref.startswith("ref: "):
+                ref_path = _ROOT_DIR / ".git" / ref[5:].strip()
+                if ref_path.exists():
+                    return ref_path.read_text(encoding="utf-8").strip()[:12]
+            return ref[:12]
+    except Exception:
+        pass
+    return "prebuilt-docker"
+
+
+def _resolve_next_build_id() -> str:
+    build_id_file = _ROOT_DIR / ".next" / "BUILD_ID"
+    try:
+        if build_id_file.exists():
+            return build_id_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return "unbuilt"
+
+
+_VERSION_META = _load_version_metadata()
+_BOOT_TIMESTAMP_UTC = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 try:
     from document_processor import DocumentProcessor
@@ -59,7 +116,7 @@ except ImportError:
 app = FastAPI(
     title="LAMLA Guide AI - Python AI Core",
     description="Multimodal Slide & Document Processing API for Ghanaian Students",
-    version="1.1.0"
+    version=str(_VERSION_META.get("version", "2.4.0")),
 )
 
 # Enable hardened CORS for Next.js web application, custom domains, and secure cloud origins
@@ -275,10 +332,33 @@ def health():
         "status": "healthy",
         "service": "LAMLA Guide AI Unified Python Engine",
         "slogan": "It's Never Too Late To Study.",
+        "version": _VERSION_META.get("version", "2.4.0"),
+        "commit_sha": _resolve_commit_sha(),
+        "release_date": _VERSION_META.get("release_date", "2026-11-06"),
+        "environment": "production" if _IS_PRODUCTION_ENV else "development",
         "provider_mode": ai_engine.mode,
         "active_model": ai_engine.active_model_name,
         "local_model": ai_engine.local_model,
         "unified": True,
+    }
+
+
+@app.get("/api/version")
+def version_info():
+    return {
+        "version": _VERSION_META.get("version", "2.4.0"),
+        "release_name": _VERSION_META.get("release_name", ""),
+        "release_date": _VERSION_META.get("release_date", "2026-11-06"),
+        "commit_sha": _resolve_commit_sha(),
+        "next_build_id": _resolve_next_build_id(),
+        "pwa_cache_version": _VERSION_META.get("pwa_cache_version", ""),
+        "booted_at_utc": _BOOT_TIMESTAMP_UTC,
+        "environment": "production" if _IS_PRODUCTION_ENV else "development",
+        "production_domain": _VERSION_META.get("production_domain", "https://lamla-guide-ai.onrender.com"),
+        "provider_mode": ai_engine.mode,
+        "active_model": ai_engine.active_model_name,
+        "migrations_included": _VERSION_META.get("migrations_included", []),
+        "components": _VERSION_META.get("components", {}),
     }
 
 @app.get("/api/provider-status")
