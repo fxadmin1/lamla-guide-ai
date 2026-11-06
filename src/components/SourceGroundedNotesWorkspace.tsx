@@ -19,6 +19,7 @@ import {
 import { useAudioPlayer } from "@/contexts/AudioPlayerContext";
 import { SlideSegment } from "@/lib/utils";
 import FastScrollHandle from "@/components/FastScrollHandle";
+import { supabase } from "@/lib/supabase";
 
 interface HeadingItem {
   id: string;
@@ -207,9 +208,15 @@ export default function SourceGroundedNotesWorkspace({
         .map((s) => `--- Slide ${s.slideNumber}: ${s.title} ---\n${s.content}`)
         .join("\n\n");
 
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           action: "regenerate_notes_section",
           section_title: headingText,

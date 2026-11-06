@@ -25,6 +25,17 @@ import {
 import { supabase } from "@/lib/supabase";
 import { tryFastClientExtraction } from "@/lib/fastClientExtractor";
 
+async function getLiveQuizAuthHeaders(includeJson: boolean = false): Promise<Record<string, string>> {
+  const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers["Authorization"] = `Bearer ${session.access_token}`;
+    }
+  } catch {}
+  return headers;
+}
+
 /* ───────────────────────── Types ───────────────────────── */
 
 interface DraftQuestion {
@@ -284,9 +295,10 @@ export default function LiveQuizRoom({
   const fetchRoomState = useCallback(async () => {
     if (!circleId || !userId) return;
     try {
+      const headers = await getLiveQuizAuthHeaders();
       const res = await fetch(
         `/api/live-quiz/${encodeURIComponent(circleId)}/state?user_id=${encodeURIComponent(userId)}`,
-        { cache: "no-store" }
+        { cache: "no-store", headers }
       );
       if (res.ok) {
         const json = await res.json();
@@ -307,12 +319,14 @@ export default function LiveQuizRoom({
 
     fetchRoomState();
 
-    const connect = () => {
+    const connect = async () => {
       if (closed || typeof window === "undefined") return;
+      const session = (await supabase.auth.getSession()).data?.session;
+      const token = session?.access_token || "";
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${proto}//${window.location.host}/ws/live-quiz/${encodeURIComponent(
         circleId
-      )}?user_id=${encodeURIComponent(userId)}&name=${encodeURIComponent(myName)}`;
+      )}?user_id=${encodeURIComponent(userId)}&token=${encodeURIComponent(token)}&name=${encodeURIComponent(myName)}`;
 
       try {
         ws = new WebSocket(wsUrl);
@@ -406,9 +420,10 @@ export default function LiveQuizRoom({
     async (nextAnswers: Record<number, number>, submitFinal: boolean) => {
       if (!circleId || !userId) return;
       try {
+        const headers = await getLiveQuizAuthHeaders(true);
         const res = await fetch(`/api/live-quiz/${encodeURIComponent(circleId)}/answer`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({
             user_id: userId,
             name: myName,
@@ -538,10 +553,16 @@ export default function LiveQuizRoom({
     }
     setBusy("generate");
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       // Send the entire text without truncating at 35,000 characters so every slide is represented
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           action: "quiz",
           content: text,
@@ -578,9 +599,10 @@ export default function LiveQuizRoom({
     setError("");
     setBusy("action");
     try {
+      const headers = await getLiveQuizAuthHeaders(true);
       const res = await fetch(`/api/live-quiz/${encodeURIComponent(circleId)}/lobby`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           user_id: userId,
           host_name: myName,
@@ -609,9 +631,10 @@ export default function LiveQuizRoom({
     setError("");
     setBusy("action");
     try {
+      const headers = await getLiveQuizAuthHeaders(true);
       const res = await fetch(`/api/live-quiz/${encodeURIComponent(circleId)}/schedule`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           user_id: userId,
           host_name: myName,
@@ -636,9 +659,10 @@ export default function LiveQuizRoom({
     setError("");
     setBusy("action");
     try {
+      const headers = await getLiveQuizAuthHeaders(true);
       const res = await fetch(`/api/live-quiz/${encodeURIComponent(circleId)}/${endpoint}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ user_id: userId }),
       });
       const json = await res.json();

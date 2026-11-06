@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { X, Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 interface ExplainThreeWaysModalProps {
   isOpen: boolean;
@@ -40,9 +41,15 @@ export default function ExplainThreeWaysModal({
     setExplanations(null);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           action: "explain_three_ways",
           options: {

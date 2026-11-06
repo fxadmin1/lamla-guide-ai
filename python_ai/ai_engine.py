@@ -27,13 +27,22 @@ import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Tuple
 
-from python_ai.web_enrichment import (
-    research_topic_from_web,
-    get_cached_document_enrichment,
-    is_visual_or_drawing_request,
-    build_labeled_concept_svg,
-    extract_core_search_phrase,
-)
+try:
+    from web_enrichment import (
+        research_topic_from_web,
+        get_cached_document_enrichment,
+        is_visual_or_drawing_request,
+        build_labeled_concept_svg,
+        extract_core_search_phrase,
+    )
+except ImportError:
+    from python_ai.web_enrichment import (
+        research_topic_from_web,
+        get_cached_document_enrichment,
+        is_visual_or_drawing_request,
+        build_labeled_concept_svg,
+        extract_core_search_phrase,
+    )
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -65,6 +74,14 @@ LOCAL_MODEL_NAME = os.environ.get("LOCAL_MODEL_NAME", "qwen2.5:1.5b")
 
 
 class PythonAIEngine:
+    _instance: Optional["PythonAIEngine"] = None
+
+    @classmethod
+    def get_instance(cls) -> "PythonAIEngine":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
     def __init__(
         self,
         api_key: str = None,
@@ -91,6 +108,7 @@ class PythonAIEngine:
         self._ollama_status: Tuple[float, bool] = (0.0, False)
         self.active_model_name = self.local_model if self.mode == "local_only" else self.hosted_models[0]
         self._cache: Dict[str, Any] = {}
+        self._blueprint_cache: Dict[str, Any] = {}
         self._lock = threading.Lock()
 
     def set_mode(self, mode: str):
@@ -381,18 +399,20 @@ class PythonAIEngine:
         json_mode: bool = False,
         temperature: float = 0.3,
         use_cache: bool = True,
+        user_id: Optional[str] = None,
     ) -> str:
         """
         Resilient, ultra-fast zero-credit-depletion inference router:
-        1. In-memory bounded response cache (instant <1ms for duplicate requests)
+        1. In-memory user-scoped bounded response cache (instant <1ms for duplicate requests, 100% user-isolated)
         2. Groq ultra-fast LPU (if GROQ_API_KEY configured) or Gemini Fast Flash (pinned model + key rotation)
         3. Keyless Free Cloud OpenAI-compatible inference (unlimited zero-credit fallback)
         4. Local Ollama (checked via 0.25s cached socket probe)
         """
         cache_key = ""
         if use_cache:
-            sig = f"{json_mode}|{temperature:.2f}|{(system_prompt or '')[:400]}|{prompt}"
-            cache_key = hashlib.sha256(sig.encode("utf-8", errors="ignore")).hexdigest()[:28]
+            cache_owner = str(user_id or "shared_global").strip()
+            sig = f"{cache_owner}|{json_mode}|{temperature:.2f}|{(system_prompt or '')[:400]}|{prompt}"
+            cache_key = hashlib.sha256(sig.encode("utf-8", errors="ignore")).hexdigest()[:32]
             with self._lock:
                 if cache_key in self._cache:
                     return self._cache[cache_key]
@@ -406,6 +426,9 @@ class PythonAIEngine:
                             self._cache.pop(old_k, None)
                     self._cache[cache_key] = val
             return val
+
+        if os.environ.get("LAMLA_OFFLINE_AI", "false").lower() in ("true", "1", "yes"):
+            raise RuntimeError("Offline mode: AI cloud inference skipped.")
 
         if self.mode == "local_only":
             return _store(self._call_ollama(prompt, system_prompt, json_mode=json_mode, temperature=temperature))
@@ -510,17 +533,20 @@ class PythonAIEngine:
 
         return self._filter_substantive_slides(slides) if filter_admin else slides
 
-    def analyze_academic_presentation(self, content: str, subject_hint: str = "") -> Dict[str, Any]:
+    def analyze_academic_presentation(self, content: str, subject_hint: str = "", user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Shared Academic Intelligence Engine:
         Examines the ENTIRE uploaded presentation from first slide/page to last before generating
         any learning output. Identifies the actual academic subject, filters out administrative/school
         metadata, extracts definitions, mechanisms, classifications, comparisons, diagrams/tables,
-        and applications, and verifies full section coverage honestly.
+        and applications, and verifies full section coverage honestly. User-isolated.
         """
-        doc_sig = hashlib.sha256(f"{subject_hint}|{content[:60000]}".encode("utf-8", errors="ignore")).hexdigest()[:24]
-        cache_key = f"blueprint_{doc_sig}"
+        cache_owner = str(user_id or "shared").strip()
+        doc_sig = hashlib.sha256(f"{cache_owner}|{subject_hint}|{content[:60000]}".encode("utf-8", errors="ignore")).hexdigest()[:28]
+        cache_key = f"blueprint_{cache_owner}_{doc_sig}"
         with self._lock:
+            if cache_key in self._blueprint_cache:
+                return self._blueprint_cache[cache_key]
             if cache_key in self._cache:
                 return self._cache[cache_key]
 
@@ -628,6 +654,7 @@ class PythonAIEngine:
         }
         with self._lock:
             self._cache[cache_key] = blueprint
+            self._blueprint_cache[cache_key] = blueprint
         return blueprint
 
     @staticmethod
@@ -1336,15 +1363,16 @@ class PythonAIEngine:
         content: str,
         style: str = "Exam-Oriented",
         educational_level: str = "Senior High School (SHS) & University",
+        user_id: Optional[str] = None,
     ) -> str:
-        blueprint = self.analyze_academic_presentation(content)
+        blueprint = self.analyze_academic_presentation(content, user_id=user_id)
         slides = blueprint["substantive_slides"]
         raw_slides = blueprint["raw_slides"]
         main_topic = blueprint["main_topic"]
         honesty_notices = blueprint["honesty_notices"]
         blueprint_prompt = blueprint["blueprint_prompt"]
 
-        enrichment = get_cached_document_enrichment(content, title=main_topic)
+        enrichment = get_cached_document_enrichment(content, title=main_topic, user_id=user_id or "")
         web_context = (
             f"\n\nSUPPLEMENTARY ACADEMIC CONTEXT (distinguish clearly from source slide statements when used):\n{enrichment['knowledge_brief']}"
             if enrichment.get("knowledge_brief")
@@ -1531,6 +1559,7 @@ MANDATORY ACADEMIC SUMMARY RULES:
         content: str,
         subject: str = "General Course",
         educational_level: str = "Senior High School (SHS) & University",
+        user_id: Optional[str] = None,
     ) -> str:
         """
         Converts the entire uploaded presentation into well-written, structured, textbook-grade
@@ -1541,14 +1570,14 @@ MANDATORY ACADEMIC SUMMARY RULES:
           and relationships between concepts
         - Clearly distinguishes supplementary academic/internet explanations from direct slide statements
         """
-        blueprint = self.analyze_academic_presentation(content, subject_hint=subject)
+        blueprint = self.analyze_academic_presentation(content, subject_hint=subject, user_id=user_id)
         slides = blueprint["substantive_slides"]
         raw_slides = blueprint["raw_slides"]
         main_topic = blueprint["main_topic"]
         honesty_notices = blueprint["honesty_notices"]
         blueprint_prompt = blueprint["blueprint_prompt"]
 
-        enrichment = get_cached_document_enrichment(content, title=main_topic)
+        enrichment = get_cached_document_enrichment(content, title=main_topic, user_id=user_id or "")
         web_brief = enrichment.get("knowledge_brief", "")
 
         slide_web_notes: Dict[int, str] = {}
@@ -1944,11 +1973,11 @@ Respond ONLY with a valid JSON array:
             "slideRef": slide_ref or "Slide 1",
         }
 
-    def generate_flashcards(self, content: str, count: int = 10) -> List[Dict[str, Any]]:
+    def generate_flashcards(self, content: str, count: int = 10, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         target_count = min(max(count, 1), 200)
-        blueprint = self.analyze_academic_presentation(content)
+        blueprint = self.analyze_academic_presentation(content, user_id=user_id)
         slides = blueprint["substantive_slides"]
-        enrichment = get_cached_document_enrichment(content)
+        enrichment = get_cached_document_enrichment(content, user_id=user_id or "")
         verified_images = enrichment.get("images") or []
         bp_prompt = blueprint.get("blueprint_prompt", "")
 
@@ -2418,6 +2447,7 @@ Return ONLY a valid JSON array of {count} objects:
         difficulty: str = "intermediate",
         question_type: str = "mcq",
         focus_weak_topics: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Academic Examination Question Generator with:
@@ -2427,7 +2457,7 @@ Return ONLY a valid JSON array of {count} objects:
         - 7-Point Question Quality Verification Gate before returning any question
         """
         target_count = min(max(int(count or 5), 1), 1000)
-        blueprint = self.analyze_academic_presentation(content)
+        blueprint = self.analyze_academic_presentation(content, user_id=user_id)
         slides = blueprint["substantive_slides"]
         bp_prompt = blueprint.get("blueprint_prompt", "")
         if not slides:
@@ -2622,10 +2652,12 @@ Return ONLY a valid JSON array of {count} objects:
         action_type: Optional[str] = None,
         chat_history: Optional[List[Dict[str, str]]] = None,
         teaching_mode: Optional[str] = "socratic",
+        user_id: Optional[str] = None,
     ) -> str:
         """
         Smart, Engaging, and Conversational AI Tutor:
         - Works from the Shared Academic Blueprint of the active Study Session without mixing sessions.
+        - Strictly isolated to the authenticated student's session.
         - Academic Teaching: Explains concepts in simple language first, then progresses to advanced mechanisms,
           uses examples/analogies, compares concepts, corrects misconceptions politely, and asks check-for-understanding questions.
         - Intelligent & Casual Conversation: Handles greetings, jokes, casual conversations about the student's day or studies,
@@ -2638,7 +2670,7 @@ Return ONLY a valid JSON array of {count} objects:
         blueprint: Optional[Dict[str, Any]] = None
         bp_prompt = ""
         if context and len(context.strip()) > 40:
-            blueprint = self.analyze_academic_presentation(context)
+            blueprint = self.analyze_academic_presentation(context, user_id=user_id)
             bp_prompt = blueprint.get("blueprint_prompt", "")
 
         web_data: Dict[str, Any] = {}
@@ -2646,7 +2678,7 @@ Return ONLY a valid JSON array of {count} objects:
         if not is_casual:
             web_data = research_topic_from_web(query, include_images=True)
             if context:
-                doc_enrichment = get_cached_document_enrichment(context)
+                doc_enrichment = get_cached_document_enrichment(context, user_id=user_id or "")
 
         external_blocks: List[str] = []
         if web_data.get("summary_text"):

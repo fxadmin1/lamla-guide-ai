@@ -46,14 +46,27 @@ export function getCandidatePythonUrls(): string[] {
 export async function callPythonBackend(
   endpointPath: string,
   payload: Record<string, any>,
-  timeoutMs: number = 35000
+  timeoutMs: number = 35000,
+  authToken?: string,
+  userId?: string
 ): Promise<any | null> {
   const urls = getCandidatePythonUrls();
+  const internalSecret = process.env.LAMLA_INTERNAL_SECRET || "lamla-internal-sec-2026-auth";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Internal-Secret": internalSecret,
+  };
+  if (authToken) {
+    headers["Authorization"] = authToken.startsWith("Bearer ") ? authToken : `Bearer ${authToken}`;
+  }
+  if (userId) {
+    headers["X-User-Id"] = userId;
+  }
   for (const base of urls) {
     try {
       const res = await fetch(`${base}${endpointPath}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(timeoutMs),
       });

@@ -105,6 +105,17 @@ type SessionTab =
   | "notebook" 
   | "progress";
 
+async function getAiFetchHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers["Authorization"] = `Bearer ${session.access_token}`;
+    }
+  } catch {}
+  return headers;
+}
+
 export default function StudentDashboardPage() {
   // Authentication & Profile State
   const [user, setUser] = useState<any>(null);
@@ -1065,10 +1076,12 @@ export default function StudentDashboardPage() {
         activeSession.title ||
         "Core Academic Study Material";
 
+      const aiHeaders = await getAiFetchHeaders();
+
       if (resourceType === "summary") {
         const res = await fetch("/api/ai", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: aiHeaders,
           body: JSON.stringify({
             action: "summary",
             content: sourceText,
@@ -1122,7 +1135,7 @@ export default function StudentDashboardPage() {
         const countToGenerate = customCount || flashcardGenerateCount || 20;
         const res = await fetch("/api/ai", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: aiHeaders,
           body: JSON.stringify({
             action: "flashcards",
             content: sourceText,
@@ -1206,7 +1219,7 @@ export default function StudentDashboardPage() {
       } else if (resourceType === "notes") {
         const res = await fetch("/api/ai", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: aiHeaders,
           body: JSON.stringify({
             action: "notes",
             content: sourceText,
@@ -1312,9 +1325,10 @@ export default function StudentDashboardPage() {
     setTutorLoading(true);
 
     try {
+      const aiHeaders = await getAiFetchHeaders();
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: aiHeaders,
         body: JSON.stringify({
           action: "tutor",
           content: textToSend,
@@ -1621,9 +1635,10 @@ export default function StudentDashboardPage() {
 
     setQuizModalLoading(true);
     try {
+      const aiHeaders = await getAiFetchHeaders();
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: aiHeaders,
         body: JSON.stringify({
           action: "quiz",
           content: activeSession.extracted_text, // STRICTLY THIS SESSION ALONE!

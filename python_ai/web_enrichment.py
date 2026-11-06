@@ -470,16 +470,24 @@ def schedule_background_enrichment(full_text: str, title: str = "", key_concepts
     ).start()
 
 
-def get_cached_document_enrichment(full_text: str, title: str = "") -> Dict[str, Any]:
-    """Returns cached internet enrichment for a document (or computes quickly if uncached)."""
+def get_cached_document_enrichment(
+    full_text: str,
+    title: str = "",
+    user_id: str = "",
+    compute_if_missing: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Returns cached internet enrichment for a document (user-scoped to guarantee isolation)."""
     _ensure_loaded()
     if not full_text:
-        return {"doc_hash": "", "topics": [], "knowledge_brief": "", "images": []}
-    computed_hash = hashlib.sha256(full_text[:120000].encode("utf-8", errors="ignore")).hexdigest()[:24]
+        return None if not compute_if_missing else {"doc_hash": "", "topics": [], "knowledge_brief": "", "images": []}
+    owner = str(user_id or "global").strip()
+    computed_hash = hashlib.sha256(f"{owner}|{full_text[:120000]}".encode("utf-8", errors="ignore")).hexdigest()[:28]
     with _LOCK:
         existing = _DOC_CACHE.get(computed_hash)
     if existing:
         return existing
+    if not compute_if_missing:
+        return None
     return enrich_uploaded_document(full_text, title=title, doc_hash=computed_hash)
 
 

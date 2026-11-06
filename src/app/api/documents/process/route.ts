@@ -94,6 +94,14 @@ export async function POST(req: NextRequest) {
     let parsedViaPython = Boolean(pastedText && !file);
 
     // 3. If file provided and not already extracted on client, forward file to Python AI streaming service
+    const internalSecret = process.env["LAMLA_INTERNAL_SECRET"] || process.env.LAMLA_INTERNAL_SECRET || "lamla-internal-sec-2026-auth";
+    const authHeaders = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      "X-User-Id": user.id,
+      "X-Internal-Secret": internalSecret,
+    };
+
     if (file && !extractedText) {
       for (const candidateBase of getCandidatePythonUrls()) {
         try {
@@ -102,6 +110,11 @@ export async function POST(req: NextRequest) {
 
           const pythonRes = await fetch(`${candidateBase}/api/upload-and-parse`, {
             method: "POST",
+            headers: {
+              "Authorization": `Bearer ${token}`,
+              "X-User-Id": user.id,
+              "X-Internal-Secret": internalSecret,
+            },
             body: pythonFormData,
             signal: AbortSignal.timeout(180000),
           });
@@ -151,7 +164,7 @@ export async function POST(req: NextRequest) {
       // Trigger background internet enrichment for pasted notes or image transcriptions
       fetch(`${PYTHON_API_URL}/api/enrich-content`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders,
         body: JSON.stringify({ title: finalTitle, content: extractedText.slice(0, 80000) }),
       }).catch(() => {});
     }
@@ -198,7 +211,7 @@ export async function POST(req: NextRequest) {
       try {
         const pySum = await fetch(`${PYTHON_API_URL}/api/generate-summary`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders,
           body: JSON.stringify({
             content: extractedText,
             document_title: finalTitle,
@@ -239,7 +252,7 @@ export async function POST(req: NextRequest) {
       try {
         const pyExp = await fetch(`${PYTHON_API_URL}/api/generate-explanation`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders,
           body: JSON.stringify({ content: extractedText, educational_level: educationalLevel }),
           signal: AbortSignal.timeout(90000),
         });
@@ -275,7 +288,7 @@ export async function POST(req: NextRequest) {
       try {
         const pyNotes = await fetch(`${PYTHON_API_URL}/api/generate-notes`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders,
           body: JSON.stringify({ content: extractedText, subject: finalTitle, educational_level: educationalLevel }),
           signal: AbortSignal.timeout(120000),
         });
@@ -311,7 +324,7 @@ export async function POST(req: NextRequest) {
       try {
         const pyCards = await fetch(`${PYTHON_API_URL}/api/generate-flashcards`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders,
           body: JSON.stringify({ content: extractedText, count: flashcardCount }),
           signal: AbortSignal.timeout(90000),
         });
@@ -372,7 +385,7 @@ export async function POST(req: NextRequest) {
       try {
         const pyQz = await fetch(`${PYTHON_API_URL}/api/generate-quiz`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders,
           body: JSON.stringify({
             content: extractedText,
             question_count: quizCount,

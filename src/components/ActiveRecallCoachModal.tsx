@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { X, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 interface ActiveRecallCoachModalProps {
   isOpen: boolean;
@@ -35,9 +36,15 @@ export default function ActiveRecallCoachModal({
     setResult(null);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           action: "active_recall_coach",
           options: {

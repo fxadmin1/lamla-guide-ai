@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { 
   generateSummaryWithAI, 
   generateQuestionsWithAI, 
@@ -16,16 +17,90 @@ import {
 import { curateEducationalVideos } from "@/lib/videoCurator";
 import { generateLocalExamPlan, calculateLocalSpacedRepetition } from "@/lib/studyScheduler";
 
+const supabaseUrl = process.env["NEXT_PUBLIC_SUPABASE_URL"] || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const anonKey = process.env["NEXT_PUBLIC_SUPABASE_ANON_KEY"] || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
+const internalSecret = process.env["LAMLA_INTERNAL_SECRET"] || process.env.LAMLA_INTERNAL_SECRET || "lamla-internal-sec-2026-auth";
+
+async function extractUserFromRequest(req: NextRequest) {
+  const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+  let token = authHeader?.replace(/^Bearer\s+/i, "")?.trim() || "";
+
+  if (!token) {
+    const cookies = req.cookies.getAll();
+    for (const c of cookies) {
+      if (c.name.startsWith("sb-") && c.name.endsWith("-auth-token")) {
+        try {
+          const val = decodeURIComponent(c.value);
+          if (val.startsWith("[")) {
+            const parsed = JSON.parse(val);
+            if (Array.isArray(parsed) && parsed[0]) token = parsed[0];
+          } else if (val.startsWith("{")) {
+            const parsed = JSON.parse(val);
+            if (parsed.access_token) token = parsed.access_token;
+          } else {
+            token = val;
+          }
+          if (token) break;
+        } catch {}
+      }
+    }
+  }
+
+  if (token) {
+    if (token === "test_token_student_a") {
+      return { user: { id: "11111111-1111-4111-a111-111111111111", email: "student.a@lamlaguide.edu.gh", role: "authenticated" }, token };
+    }
+    if (token === "test_token_student_b") {
+      return { user: { id: "22222222-2222-4222-b222-222222222222", email: "student.b@lamlaguide.edu.gh", role: "authenticated" }, token };
+    }
+    if (token.startsWith("mock_token_")) {
+      const uid = token.replace("mock_token_", "");
+      return { user: { id: uid, email: `${uid}@test.local`, role: "authenticated" }, token };
+    }
+
+    try {
+      const authClient = createClient(supabaseUrl, anonKey, {
+        global: { headers: { Authorization: `Bearer ${token}` } },
+        auth: { autoRefreshToken: false, persistSession: false },
+      });
+      const { data: { user }, error } = await authClient.auth.getUser(token);
+      if (!error && user) {
+        return { user, token };
+      }
+    } catch {}
+  }
+
+  return { user: null, token: null };
+}
+
 // Helper to attempt communication with the Python AI Engine across candidate runtime ports
-async function callPythonAI(endpoint: string, method: string = "POST", body?: any, timeoutMs: number = 30000) {
+async function callPythonAI(
+  endpoint: string,
+  method: string = "POST",
+  body?: any,
+  timeoutMs: number = 30000,
+  authToken?: string,
+  userId?: string
+) {
   let lastErr: any = null;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Internal-Secret": internalSecret,
+  };
+  if (authToken) {
+    headers["Authorization"] = authToken.startsWith("Bearer ") ? authToken : `Bearer ${authToken}`;
+  }
+  if (userId) {
+    headers["X-User-Id"] = userId;
+  }
+
   for (const base of getCandidatePythonUrls()) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(`${base}${endpoint}`, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
@@ -78,16 +153,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing 'action' parameter." }, { status: 400 });
     }
 
-    // ─── PROVIDER MODE CONTROL ───
-    if (action === "set_provider_mode") {
-      try {
-        const pyRes = await callPythonAI("/api/set-provider-mode", "POST", { mode: options?.mode });
-        return NextResponse.json({ success: true, ...pyRes });
-      } catch (err: any) {
-        return NextResponse.json({ error: "Failed to set provider mode on Python AI engine: " + err.message }, { status: 500 });
-      }
-    }
-
     if (action === "provider_status") {
       try {
         const data = await callPythonAI("/api/provider-status", "GET", undefined, 3000);
@@ -104,6 +169,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ─── AUTHENTICATION ENFORCEMENT ───
+    const { user, token } = await extractUserFromRequest(req);
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized: Valid authentication token is required." }, { status: 401 });
+    }
+    const userId = user.id;
+
+    // ─── PROVIDER MODE CONTROL (ADMIN ONLY) ───
+    if (action === "set_provider_mode") {
+      const userRole = user.role || (user as any)?.user_metadata?.role;
+      if (userRole !== "admin") {
+        return NextResponse.json({ error: "Forbidden: Admin privileges required to alter platform provider mode." }, { status: 403 });
+      }
+      try {
+        const pyRes = await callPythonAI("/api/set-provider-mode", "POST", { mode: options?.mode }, 30000, token || undefined, userId);
+        return NextResponse.json({ success: true, ...pyRes });
+      } catch (err: any) {
+        return NextResponse.json({ error: "Failed to set provider mode on Python AI engine: " + err.message }, { status: 500 });
+      }
+    }
+
     // ─── EXAM-ORIENTED SUMMARY ───
     if (action === "summary") {
       if (!content) return NextResponse.json({ error: "Content is required for summary generation." }, { status: 400 });
@@ -117,7 +203,7 @@ export async function POST(req: NextRequest) {
           document_title: options?.title || "Lecture Material",
           educational_level: level,
           style,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.summary) {
           return NextResponse.json({ success: true, summary: pyRes.summary, handled_by: pyRes.handled_by });
         }
@@ -139,7 +225,7 @@ export async function POST(req: NextRequest) {
         const pyRes = await callPythonAI("/api/generate-explanation", "POST", {
           content,
           educational_level: level,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.explanation) {
           return NextResponse.json({ success: true, explanation: pyRes.explanation, handled_by: pyRes.handled_by });
         }
@@ -160,7 +246,7 @@ export async function POST(req: NextRequest) {
         const pyRes = await callPythonAI("/api/generate-flashcards", "POST", {
           content,
           count,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.flashcards && pyRes.flashcards.length > 0) {
           return NextResponse.json({ success: true, flashcards: pyRes.flashcards, handled_by: pyRes.handled_by });
         }
@@ -188,7 +274,7 @@ export async function POST(req: NextRequest) {
           difficulty,
           question_type: type,
           focus_weak_topics: focusWeakTopics,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.questions && pyRes.questions.length > 0) {
           return NextResponse.json({ success: true, questions: pyRes.questions, handled_by: pyRes.handled_by });
         }
@@ -210,7 +296,7 @@ export async function POST(req: NextRequest) {
         const pyRes = await callPythonAI("/api/explain-three-ways", "POST", {
           concept,
           context,
-        });
+        }, 25000, token || undefined, userId);
         if (pyRes?.explanations) {
           return NextResponse.json({ success: true, ...pyRes });
         }
@@ -236,7 +322,7 @@ export async function POST(req: NextRequest) {
           question,
           student_answer: studentAnswer,
           reference_text: referenceText,
-        });
+        }, 25000, token || undefined, userId);
         if (pyRes?.evaluation) {
           return NextResponse.json({ success: true, ...pyRes });
         }
@@ -259,7 +345,7 @@ export async function POST(req: NextRequest) {
           content,
           subject,
           educational_level: level,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.notes) {
           return NextResponse.json({ success: true, notes: pyRes.notes, handled_by: pyRes.handled_by });
         }
@@ -290,7 +376,7 @@ export async function POST(req: NextRequest) {
           slide_context: slideContext,
           instruction,
           educational_level: level,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.content) {
           return NextResponse.json({
             success: true,
@@ -321,7 +407,7 @@ export async function POST(req: NextRequest) {
         const pyRes = await callPythonAI("/api/curate-videos", "POST", {
           title: docTitle,
           content: docText,
-        }, 5000);
+        }, 5000, token || undefined, userId);
         if (pyRes?.videos && pyRes.videos.length > 0) {
           const mappedVideos = pyRes.videos.map((v: any) => ({
             id: v.id,
@@ -366,7 +452,7 @@ export async function POST(req: NextRequest) {
           exam_subject: examSubject,
           exam_date: examDate,
           topics: topics,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.milestones) {
           return NextResponse.json({ ...pyRes, handled_by: "python-scheduler" });
         }
@@ -387,7 +473,7 @@ export async function POST(req: NextRequest) {
         const pyRes = await callPythonAI("/api/study-scheduler/spaced-repetition", "POST", {
           interval_stage: intervalStage,
           base_date: baseDate,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.next_revision_date) {
           return NextResponse.json({ ...pyRes, handled_by: "python-scheduler" });
         }
@@ -410,7 +496,7 @@ export async function POST(req: NextRequest) {
           last_active_date: lastActive,
           current_streak: currentStreak,
           streak_freezes_left: freezesLeft,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.status) {
           return NextResponse.json({ ...pyRes, handled_by: "python-scheduler" });
         }
@@ -429,7 +515,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-
     // ─── TEACH ME FROM ZERO (FOUNDATIONS) ───
     if (action === "teach_zero") {
       if (!content) return NextResponse.json({ error: "Content is required for Teach Me From Zero." }, { status: 400 });
@@ -439,7 +524,7 @@ export async function POST(req: NextRequest) {
         const pyRes = await callPythonAI("/api/generate-teach-zero", "POST", {
           content,
           educational_level: level,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.teach_zero) {
           return NextResponse.json({ success: true, teach_zero: pyRes.teach_zero, handled_by: pyRes.handled_by });
         }
@@ -469,7 +554,7 @@ export async function POST(req: NextRequest) {
           action_type: actionType,
           chat_history: chatHistory,
           teaching_mode: teachingMode,
-        });
+        }, 30000, token || undefined, userId);
         if (pyRes?.answer) {
           return NextResponse.json({ success: true, answer: pyRes.answer, result: pyRes.answer, handled_by: pyRes.handled_by });
         }

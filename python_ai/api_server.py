@@ -13,7 +13,7 @@ import time
 import asyncio
 import hashlib
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -46,6 +46,7 @@ try:
     from web_enrichment import schedule_background_enrichment, build_labeled_concept_svg, research_topic_from_web
     from academic_knowledge import AcademicKnowledgeBuilder, AcademicKnowledgeRepresentation
     from benchmark_suite import AcademicBenchmarkRunner
+    from auth_validator import get_authenticated_user, get_optional_authenticated_user, verify_resource_ownership
 except ImportError:
     from python_ai.document_processor import DocumentProcessor
     from python_ai.ai_engine import PythonAIEngine
@@ -53,6 +54,7 @@ except ImportError:
     from python_ai.web_enrichment import schedule_background_enrichment, build_labeled_concept_svg, research_topic_from_web
     from python_ai.academic_knowledge import AcademicKnowledgeBuilder, AcademicKnowledgeRepresentation
     from python_ai.benchmark_suite import AcademicBenchmarkRunner
+    from python_ai.auth_validator import get_authenticated_user, get_optional_authenticated_user, verify_resource_ownership
 
 app = FastAPI(
     title="LAMLA Guide AI - Python AI Core",
@@ -300,7 +302,12 @@ def provider_status():
     }
 
 @app.post("/api/set-provider-mode")
-def set_provider_mode(req: ProviderModeRequest):
+def set_provider_mode(
+    req: ProviderModeRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden: Administrator permissions required to change platform AI mode.")
     valid = ["local_only", "free_configured", "manual_hybrid", "hosted_ai"]
     if req.mode.lower() not in valid:
         raise HTTPException(status_code=400, detail=f"Invalid mode. Choose from: {valid}")
@@ -308,7 +315,8 @@ def set_provider_mode(req: ProviderModeRequest):
     return {
         "success": True,
         "new_mode": ai_engine.mode,
-        "active_model": ai_engine.active_model_name
+        "active_model": ai_engine.active_model_name,
+        "set_by": user.get("email") or user["id"],
     }
 
 _PARSE_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -316,18 +324,22 @@ _MAX_PARSE_CACHE = 80
 
 
 @app.post("/api/upload-and-parse")
-async def upload_and_parse(file: UploadFile = File(...)):
+async def upload_and_parse(
+    file: UploadFile = File(...),
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     """
     Zero-storage-bloat high-capacity document parser (.pptx, .pdf, .docx, .txt, images up to 1GB).
-    - Streams chunks in 1 MB blocks directly to an ephemeral temp file so RAM stays low
-    - Deduplicates identical uploads in O(1) via SHA-256 content hash
-    - Immediately deletes the raw binary file in `finally:` so millions of uploads never fill disk storage
+    - Strictly authenticated and user-isolated
+    - Ephemeral user-scoped temp directory with immediate cleanup in `finally:`
+    - User-scoped parsing cache prevents cross-student data leakage
     - Automatically triggers background internet knowledge & diagram enrichment on the extracted topics
     """
     import tempfile
     import uuid
     import re as _re
 
+    user_id = user["id"]
     MAX_UPLOAD_BYTES = 1536 * 1024 * 1024  # 1.5 GB maximum for large slide decks, videos & PDFs
     ALLOWED_EXTS = {"pptx", "pdf", "docx", "doc", "txt", "md", "jpg", "jpeg", "png", "webp"}
 
@@ -343,8 +355,9 @@ async def upload_and_parse(file: UploadFile = File(...)):
         )
 
     safe_suffix = f".{ext}" if ext.isalnum() and len(ext) <= 8 else ".tmp"
-    temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, f"lamla_up_{uuid.uuid4().hex}{safe_suffix}")
+    user_temp_dir = os.path.join(tempfile.gettempdir(), "lamla_users", user_id)
+    os.makedirs(user_temp_dir, exist_ok=True)
+    temp_path = os.path.join(user_temp_dir, f"lamla_up_{uuid.uuid4().hex}{safe_suffix}")
 
     try:
         file_hasher = hashlib.sha256()
@@ -364,13 +377,19 @@ async def upload_and_parse(file: UploadFile = File(...)):
                 file_hasher.update(chunk)
 
         file_size = total_read
-        doc_hash = f"doc_extracted_{file_hasher.hexdigest()}"
+        # User-scoped cache key guarantees Student A and Student B never share parsed caches
+        user_doc_hash = f"{user_id}:doc_extracted_{file_hasher.hexdigest()}"
 
-        # Rapid SHA-256 deduplication across millions of uploads
-        if doc_hash in _PARSE_CACHE:
-            cached_data = dict(_PARSE_CACHE[doc_hash])
+        if user_doc_hash in _PARSE_CACHE:
+            cached_data = dict(_PARSE_CACHE[user_doc_hash])
             cached_data["title"] = clean_filename
             cached_data["file_size_bytes"] = file_size
+            schedule_background_enrichment(
+                cached_data.get("full_text", ""),
+                clean_filename,
+                cached_data.get("key_concepts"),
+            )
+            return {"success": True, "data": cached_data, "deduplicated": True}
             schedule_background_enrichment(
                 cached_data.get("full_text", ""),
                 clean_filename,
@@ -420,7 +439,7 @@ async def upload_and_parse(file: UploadFile = File(...)):
         if len(_PARSE_CACHE) >= _MAX_PARSE_CACHE:
             for old_k in list(_PARSE_CACHE.keys())[:20]:
                 _PARSE_CACHE.pop(old_k, None)
-        _PARSE_CACHE[doc_hash] = compact_cached
+        _PARSE_CACHE[user_doc_hash] = compact_cached
 
         # Trigger automatic internet research & visual diagram enrichment in background!
         schedule_background_enrichment(
@@ -448,15 +467,18 @@ class EnrichContentRequest(BaseModel):
 
 
 @app.post("/api/enrich-content")
-def enrich_content_endpoint(req: EnrichContentRequest):
-    """Triggers background internet enrichment for pasted notes or restored study sessions."""
-    schedule_background_enrichment(req.content, req.title or "")
+def enrich_content_endpoint(
+    req: EnrichContentRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
+    """Triggers background internet enrichment for pasted notes or restored study sessions (user-isolated)."""
+    schedule_background_enrichment(req.content, req.title or "", user_id=user["id"])
     return {"success": True, "scheduled": True}
 
 
 @app.get("/api/concept-visual")
 def concept_visual_endpoint(q: str = "Core Concept"):
-    """Returns a clean, labeled SVG schematic for any concept on demand."""
+    """Returns a clean, labeled SVG schematic for any concept on demand (public)."""
     from fastapi.responses import Response as FastAPIResponse
     web_res = research_topic_from_web(q, include_images=False)
     title = web_res.get("source_title") or q
@@ -469,64 +491,89 @@ def concept_visual_endpoint(q: str = "Core Concept"):
     return FastAPIResponse(content=svg_xml, media_type="image/svg+xml")
 
 @app.post("/api/generate-summary")
-def generate_summary(req: AnalyzeRequest):
+def generate_summary(
+    req: AnalyzeRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
-        summary_text = ai_engine.generate_exam_summary(req.content, style=req.style, educational_level=req.educational_level)
+        summary_text = ai_engine.generate_exam_summary(
+            req.content,
+            style=req.style,
+            educational_level=req.educational_level,
+            user_id=user["id"],
+        )
         return {
             "success": True,
             "title": req.document_title,
             "style": req.style,
             "summary": summary_text,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate-explanation")
-def generate_explanation(req: ExplanationRequest):
+def generate_explanation(
+    req: ExplanationRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         text = ai_engine.generate_detailed_explanation(req.content, educational_level=req.educational_level)
         return {
             "success": True,
             "explanation": text,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate-notes")
-def generate_notes(req: NotesRequest):
+def generate_notes(
+    req: NotesRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
-        notes = ai_engine.generate_study_notes(req.content, subject=req.subject, educational_level=req.educational_level)
+        notes = ai_engine.generate_study_notes(
+            req.content,
+            subject=req.subject,
+            educational_level=req.educational_level,
+            user_id=user["id"],
+        )
         return {
             "success": True,
             "notes": notes,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/regenerate-notes-section")
-def regenerate_notes_section(req: RegenerateNotesSectionRequest):
+def regenerate_notes_section(
+    req: RegenerateNotesSectionRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         content = ai_engine.regenerate_notes_section(
             section_title=req.section_title,
             current_section_content=req.current_section_content,
             slide_context=req.slide_context,
             instruction=req.instruction or "standard_refresh",
-            educational_level=req.educational_level or "Senior High School (SHS) & University"
+            educational_level=req.educational_level or "Senior High School (SHS) & University",
         )
         return {
             "success": True,
             "section_title": req.section_title,
             "content": content,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/curate-videos")
-def curate_videos(req: CurateVideosRequest):
+def curate_videos(
+    req: CurateVideosRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         from python_ai.video_curator import curate_videos_for_text
         res = curate_videos_for_text(req.title, req.content)
@@ -535,7 +582,10 @@ def curate_videos(req: CurateVideosRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/study-scheduler/plan")
-def study_scheduler_plan(req: ExamPlanRequest):
+def study_scheduler_plan(
+    req: ExamPlanRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         from python_ai.study_scheduler import generate_exam_study_plan
         res = generate_exam_study_plan(req.exam_subject, req.exam_date, req.topics)
@@ -544,7 +594,10 @@ def study_scheduler_plan(req: ExamPlanRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/study-scheduler/spaced-repetition")
-def study_scheduler_spaced(req: SpacedRepetitionRequest):
+def study_scheduler_spaced(
+    req: SpacedRepetitionRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         from python_ai.study_scheduler import calculate_spaced_repetition
         res = calculate_spaced_repetition(req.interval_stage, req.base_date)
@@ -553,7 +606,10 @@ def study_scheduler_spaced(req: SpacedRepetitionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/study-scheduler/streak-health")
-def study_scheduler_streak(req: StreakHealthRequest):
+def study_scheduler_streak(
+    req: StreakHealthRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         from python_ai.study_scheduler import evaluate_streak_health
         res = evaluate_streak_health(req.last_active_date, req.current_streak, req.streak_freezes_left)
@@ -563,81 +619,100 @@ def study_scheduler_streak(req: StreakHealthRequest):
 
 
 @app.post("/api/generate-teach-zero")
-def generate_teach_zero(req: TeachZeroRequest):
+def generate_teach_zero(
+    req: TeachZeroRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         notes = ai_engine.generate_teach_me_from_zero(req.content, educational_level=req.educational_level)
         return {
             "success": True,
             "teach_zero": notes,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate-flashcards")
-def generate_flashcards(req: FlashcardsRequest):
+def generate_flashcards(
+    req: FlashcardsRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
-        cards = ai_engine.generate_flashcards(req.content, count=req.count or 10)
+        cards = ai_engine.generate_flashcards(req.content, count=req.count or 10, user_id=user["id"])
         return {
             "success": True,
             "total_requested": req.count or 10,
             "total_generated": len(cards),
             "flashcards": cards,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate-quiz")
-def generate_quiz(req: QuizRequest):
+def generate_quiz(
+    req: QuizRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         questions = ai_engine.generate_practice_quiz(
             content=req.content,
             count=req.question_count,
             difficulty=req.difficulty,
             question_type=req.question_type or "mcq",
-            focus_weak_topics=req.focus_weak_topics
+            focus_weak_topics=req.focus_weak_topics,
+            user_id=user["id"],
         )
         return {
             "success": True,
             "total_questions": len(questions),
             "questions": questions,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/explain-three-ways")
-def explain_three_ways_endpoint(req: ThreeWaysRequest):
+def explain_three_ways_endpoint(
+    req: ThreeWaysRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         explanations = ai_engine.explain_three_ways(req.concept, context=req.context or "")
         return {
             "success": True,
             "concept": req.concept,
             "explanations": explanations,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/active-recall-coach")
-def active_recall_coach_endpoint(req: ActiveRecallCoachRequest):
+def active_recall_coach_endpoint(
+    req: ActiveRecallCoachRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         evaluation = ai_engine.active_recall_coach_evaluate(
             question=req.question,
             student_answer=req.student_answer,
-            reference_text=req.reference_text or ""
+            reference_text=req.reference_text or "",
         )
         return {
             "success": True,
             "evaluation": evaluation,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/tutor")
-def ai_tutor_dialogue(req: TutorRequest):
+def ai_tutor_dialogue(
+    req: TutorRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     try:
         response = ai_engine.ask_study_tutor(
             query=req.user_query,
@@ -645,12 +720,13 @@ def ai_tutor_dialogue(req: TutorRequest):
             educational_level=req.educational_level or "University / SHS",
             action_type=req.action_type,
             chat_history=req.chat_history or [],
-            teaching_mode=req.teaching_mode or "socratic"
+            teaching_mode=req.teaching_mode or "socratic",
+            user_id=user["id"],
         )
         return {
             "success": True,
             "answer": response,
-            "handled_by": ai_engine.active_model_name
+            "handled_by": ai_engine.active_model_name,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -660,10 +736,14 @@ class AcademicBlueprintRequest(BaseModel):
     title: Optional[str] = "Academic Presentation"
 
 @app.post("/api/academic-blueprint")
-def generate_academic_blueprint(req: AcademicBlueprintRequest):
+def generate_academic_blueprint(
+    req: AcademicBlueprintRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     """
     Returns the unified multi-dimensional academic knowledge representation
     including concepts, mechanisms, comparisons, structures, coverage, and markdown rendering.
+    User-isolated.
     """
     try:
         raw_doc = processor.process_text(req.content, req.title or "Presentation")
@@ -680,7 +760,10 @@ class EvaluateBenchmarkRequest(BaseModel):
     dataset_name: Optional[str] = "autonomic_pharmacology"
 
 @app.post("/api/evaluate-benchmark")
-def evaluate_academic_benchmark(req: EvaluateBenchmarkRequest):
+def evaluate_academic_benchmark(
+    req: EvaluateBenchmarkRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+):
     """
     Runs automated academic evaluation across benchmark datasets (Autonomic Pharmacology,
     Cellular Respiration, Macroeconomics) measuring coverage %, zero-slide leak compliance,

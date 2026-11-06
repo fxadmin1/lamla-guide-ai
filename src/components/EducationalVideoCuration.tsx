@@ -11,6 +11,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { EducationalVideo, CuratedVideoResponse } from "@/lib/videoCurator";
+import { supabase } from "@/lib/supabase";
 
 interface EducationalVideoCurationProps {
   documentTitle: string;
@@ -36,9 +37,15 @@ export default function EducationalVideoCuration({
     setLoading(true);
     setError(null);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           action: "curate_videos",
           title: documentTitle,

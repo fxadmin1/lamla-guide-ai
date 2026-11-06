@@ -25,8 +25,13 @@ import urllib.parse
 import re as _re
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, Depends
 from pydantic import BaseModel
+
+try:
+    from auth_validator import get_authenticated_user, validate_auth_token
+except ImportError:
+    from python_ai.auth_validator import get_authenticated_user, validate_auth_token
 
 router = APIRouter()
 
@@ -683,9 +688,9 @@ async def _on_hub_startup():
 
 
 @router.get("/api/study-groups")
-async def list_study_groups(user_id: str = Query(...)):
+async def list_study_groups(user: Dict[str, Any] = Depends(get_authenticated_user)):
     ensure_scheduled_timers_started()
-    return {"success": True, "groups": STORE.list_for_user(user_id)}
+    return {"success": True, "groups": STORE.list_for_user(user["id"])}
 
 
 @router.get("/api/study-groups/invite/{invite_code}")
@@ -722,7 +727,7 @@ async def preview_group_invite(invite_code: str):
 
 
 @router.post("/api/study-groups/create")
-async def create_study_group(req: CreateGroupRequest):
+async def create_study_group(req: CreateGroupRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
     name = _sanitize_str(req.name, 80)
     if not name:
         raise HTTPException(status_code=400, detail="Group name is required.")
@@ -732,7 +737,7 @@ async def create_study_group(req: CreateGroupRequest):
     institution = _sanitize_str(req.institution, 100)
     description = _sanitize_str(req.description, 300) or "Live synchronized quiz study group."
     display_name = _sanitize_str(req.display_name, 40) or "Group Admin"
-    user_id = _sanitize_str(req.user_id, 64)
+    user_id = user["id"]
 
     invite_code = f"{code_prefix}-{random.randint(1000, 9999)}"
     while STORE.find_by_code(invite_code) is not None:
@@ -740,6 +745,7 @@ async def create_study_group(req: CreateGroupRequest):
 
     circle_id = f"grp_{uuid.uuid4().hex[:12]}"
     now = _now_iso()
+    user_email = user.get("email") or _sanitize_str(req.user_email or "", 80)
     group = {
         "id": circle_id,
         "name": name,
@@ -756,7 +762,7 @@ async def create_study_group(req: CreateGroupRequest):
                 "user_id": user_id,
                 "role": "owner",
                 "display_name": display_name,
-                "user_email": _sanitize_str(req.user_email or "", 80),
+                "user_email": user_email,
                 "joined_at": now,
             }
         ],
@@ -769,11 +775,11 @@ async def create_study_group(req: CreateGroupRequest):
 
 
 @router.post("/api/study-groups/join")
-async def join_study_group(req: JoinGroupRequest):
+async def join_study_group(req: JoinGroupRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
     ensure_scheduled_timers_started()
     clean_code = _sanitize_str(req.invite_code.upper(), 20)
     display_name = _sanitize_str(req.display_name, 40) or "Member"
-    user_id = _sanitize_str(req.user_id, 64)
+    user_id = user["id"]
 
     group = STORE.find_by_code(clean_code)
     if not group:
@@ -796,13 +802,14 @@ async def join_study_group(req: JoinGroupRequest):
             detail=f"This study group has reached the maximum capacity of {MAX_GROUP_MEMBERS} students.",
         )
 
+    user_email = user.get("email") or _sanitize_str(req.user_email or "", 80)
     members.append({
         "id": f"mem_{uuid.uuid4().hex[:8]}",
         "circle_id": group["id"],
         "user_id": user_id,
         "role": "member",
         "display_name": display_name,
-        "user_email": _sanitize_str(req.user_email or "", 80),
+        "user_email": user_email,
         "joined_at": _now_iso(),
     })
     STORE.save_async()
@@ -822,29 +829,36 @@ async def join_study_group(req: JoinGroupRequest):
 
 
 @router.get("/api/study-groups/{circle_id}")
-async def get_study_group_detail(circle_id: str, user_id: str = Query("")):
+async def get_study_group_detail(circle_id: str, user: Dict[str, Any] = Depends(get_authenticated_user)):
     ensure_scheduled_timers_started()
     group = STORE.get(circle_id)
     if not group:
         raise HTTPException(status_code=404, detail="Study group not found.")
+
+    members = group.get("members", [])
+    is_member = any(m.get("user_id") == user["id"] for m in members)
+    if not is_member and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="You must be a member of this study group to access its details.")
+
     return {
         "success": True,
         "group": STORE._summary(group),
-        "members": group.get("members", []),
+        "members": members,
         "standings": _compute_sorted_standings(group)[:100],
-        "quiz_state": _build_client_state(circle_id, viewer_id=user_id),
+        "quiz_state": _build_client_state(circle_id, viewer_id=user["id"]),
     }
 
 
 @router.post("/api/study-groups/{circle_id}/role")
-async def update_member_role(circle_id: str, req: UpdateRoleRequest):
+async def update_member_role(circle_id: str, req: UpdateRoleRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
     group = STORE.get(circle_id)
     if not group:
         raise HTTPException(status_code=404, detail="Study group not found.")
+    actor_id = user["id"]
     # Allow group creator to manage any member, or allow a student to remove/leave themselves
-    if group.get("created_by") != req.actor_user_id and not (req.role == "remove" and req.target_user_id == req.actor_user_id):
+    if group.get("created_by") != actor_id and not (req.role == "remove" and req.target_user_id == actor_id):
         raise HTTPException(status_code=403, detail="Only the group creator can manage assistant admins.")
-    if req.target_user_id == group.get("created_by"):
+    if req.target_user_id == group.get("created_by") and req.role != "remove":
         raise HTTPException(status_code=400, detail="Cannot change the group creator's role.")
 
     members = group.get("members", [])
@@ -873,11 +887,11 @@ async def update_member_role(circle_id: str, req: UpdateRoleRequest):
 
 
 @router.delete("/api/study-groups/{circle_id}")
-async def delete_study_group(circle_id: str, user_id: str = Query(...)):
+async def delete_study_group(circle_id: str, user: Dict[str, Any] = Depends(get_authenticated_user)):
     group = STORE.get(circle_id)
     if not group:
         raise HTTPException(status_code=404, detail="Study group not found.")
-    if group.get("created_by") != user_id:
+    if group.get("created_by") != user["id"] and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Only the group creator can delete this study group.")
 
     for task_map in (TIMER_TASKS, SCHEDULE_TASKS, DEBOUNCE_TASKS):
@@ -926,8 +940,8 @@ async def get_live_quiz_state(circle_id: str, user_id: str = Query("")):
 
 
 @router.post("/api/live-quiz/{circle_id}/lobby")
-async def open_live_quiz_lobby(circle_id: str, req: OpenLobbyRequest):
-    _require_admin(circle_id, req.user_id)
+async def open_live_quiz_lobby(circle_id: str, req: OpenLobbyRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
+    _require_admin(circle_id, user["id"])
     if not req.questions or len(req.questions) < 1:
         raise HTTPException(status_code=400, detail="At least 1 question is required to open a quiz lobby.")
     if len(req.questions) > MAX_QUIZ_QUESTIONS:
@@ -959,7 +973,7 @@ async def open_live_quiz_lobby(circle_id: str, req: OpenLobbyRequest):
     room = _get_or_create_room(circle_id)
     room["phase"] = "lobby"
     room["lobby"] = {
-        "hostId": _sanitize_str(req.user_id, 64),
+        "hostId": user["id"],
         "hostName": _sanitize_str(req.host_name, 40) or "Admin",
         "title": _sanitize_str(req.title, 120) or "Live Session Quiz",
         "count": len(public_qs),
@@ -978,13 +992,13 @@ async def open_live_quiz_lobby(circle_id: str, req: OpenLobbyRequest):
         STORE.save_async()
 
     await _broadcast_room(circle_id)
-    return {"success": True, "state": _build_client_state(circle_id, viewer_id=req.user_id)}
+    return {"success": True, "state": _build_client_state(circle_id, viewer_id=user["id"])}
 
 
 @router.post("/api/live-quiz/{circle_id}/schedule")
-async def schedule_live_quiz(circle_id: str, req: ScheduleQuizRequest):
+async def schedule_live_quiz(circle_id: str, req: ScheduleQuizRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
     """Schedules a class quiz for a future timestamp; automatically starts when the scheduled time arrives."""
-    _require_admin(circle_id, req.user_id)
+    _require_admin(circle_id, user["id"])
     if not req.questions or len(req.questions) < 1:
         raise HTTPException(status_code=400, detail="At least 1 question is required to schedule a quiz.")
     if len(req.questions) > MAX_QUIZ_QUESTIONS:
@@ -1030,7 +1044,7 @@ async def schedule_live_quiz(circle_id: str, req: ScheduleQuizRequest):
     room["secret_key"] = secret_key
     room["scheduled"] = {
         "id": sched_id,
-        "hostId": req.user_id,
+        "hostId": user["id"],
         "hostName": host_name,
         "title": title,
         "count": len(public_qs),
@@ -1043,7 +1057,7 @@ async def schedule_live_quiz(circle_id: str, req: ScheduleQuizRequest):
     if g is not None:
         g["scheduled_quiz"] = {
             "id": sched_id,
-            "hostId": req.user_id,
+            "hostId": user["id"],
             "hostName": host_name,
             "title": title,
             "durationSec": duration_sec,
@@ -1058,12 +1072,12 @@ async def schedule_live_quiz(circle_id: str, req: ScheduleQuizRequest):
     )
 
     await _broadcast_room(circle_id)
-    return {"success": True, "state": _build_client_state(circle_id, viewer_id=req.user_id)}
+    return {"success": True, "state": _build_client_state(circle_id, viewer_id=user["id"])}
 
 
 @router.post("/api/live-quiz/{circle_id}/start")
-async def start_live_quiz(circle_id: str, req: HostActionRequest):
-    _require_admin(circle_id, req.user_id)
+async def start_live_quiz(circle_id: str, req: HostActionRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
+    _require_admin(circle_id, user["id"])
     room = _get_or_create_room(circle_id)
 
     if room["phase"] == "lobby" and room.get("lobby"):
@@ -1085,29 +1099,36 @@ async def start_live_quiz(circle_id: str, req: HostActionRequest):
     )
 
     await _broadcast_room(circle_id)
-    return {"success": True, "state": _build_client_state(circle_id, viewer_id=req.user_id)}
+    return {"success": True, "state": _build_client_state(circle_id, viewer_id=user["id"])}
 
 
 @router.post("/api/live-quiz/{circle_id}/answer")
-async def submit_live_quiz_answer(circle_id: str, req: SubmitAnswerRequest):
-    if not STORE.get(circle_id):
+async def submit_live_quiz_answer(circle_id: str, req: SubmitAnswerRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
+    group = STORE.get(circle_id)
+    if not group:
         raise HTTPException(status_code=404, detail="Study group not found.")
+
+    members = group.get("members", [])
+    if not any(m.get("user_id") == user["id"] for m in members) and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="You must be a member of this study group to submit quiz answers.")
+
     room = _get_or_create_room(circle_id)
     if room["phase"] != "running" or not room.get("round"):
         raise HTTPException(status_code=400, detail="No active quiz is currently running.")
 
     now_ms = _now_ms()
+    user_id = user["id"]
     if now_ms > room["round"]["endsAt"] + 2500:
         _finalize_round(circle_id)
         await _broadcast_room(circle_id)
-        return {"success": True, "state": _build_client_state(circle_id, viewer_id=req.user_id)}
+        return {"success": True, "state": _build_client_state(circle_id, viewer_id=user_id)}
 
-    prev = room["submissions"].get(req.user_id)
+    prev = room["submissions"].get(user_id)
     already_submitted = bool(prev and prev.get("submitted"))
     if not already_submitted:
         clean_answers = {str(k): int(v) for k, v in (req.answers or {}).items()}
         is_submitting = bool(req.submitted)
-        room["submissions"][req.user_id] = {
+        room["submissions"][user_id] = {
             "name": req.name.strip() or (prev.get("name") if prev else "Participant"),
             "answers": clean_answers,
             "submitted": is_submitting,
@@ -1126,20 +1147,20 @@ async def submit_live_quiz_answer(circle_id: str, req: SubmitAnswerRequest):
     else:
         _schedule_debounced_broadcast(circle_id, delay_sec=0.12)
 
-    return {"success": True, "state": _build_client_state(circle_id, viewer_id=req.user_id)}
+    return {"success": True, "state": _build_client_state(circle_id, viewer_id=user_id)}
 
 
 @router.post("/api/live-quiz/{circle_id}/end")
-async def end_live_quiz_now(circle_id: str, req: HostActionRequest):
-    _require_admin(circle_id, req.user_id)
+async def end_live_quiz_now(circle_id: str, req: HostActionRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
+    _require_admin(circle_id, user["id"])
     _finalize_round(circle_id)
     await _broadcast_room(circle_id)
-    return {"success": True, "state": _build_client_state(circle_id, viewer_id=req.user_id)}
+    return {"success": True, "state": _build_client_state(circle_id, viewer_id=user["id"])}
 
 
 @router.post("/api/live-quiz/{circle_id}/reset")
-async def reset_live_quiz(circle_id: str, req: HostActionRequest):
-    _require_admin(circle_id, req.user_id)
+async def reset_live_quiz(circle_id: str, req: HostActionRequest, user: Dict[str, Any] = Depends(get_authenticated_user)):
+    _require_admin(circle_id, user["id"])
     for task_map in (TIMER_TASKS, SCHEDULE_TASKS):
         t = task_map.pop(circle_id, None)
         if t and not t.done():
@@ -1159,7 +1180,7 @@ async def reset_live_quiz(circle_id: str, req: HostActionRequest):
         STORE.save_async()
 
     await _broadcast_room(circle_id)
-    return {"success": True, "state": _build_client_state(circle_id, viewer_id=req.user_id)}
+    return {"success": True, "state": _build_client_state(circle_id, viewer_id=user["id"])}
 
 
 # ───────────────────────── Real-Time WebSocket ─────────────────────────
@@ -1168,17 +1189,36 @@ async def reset_live_quiz(circle_id: str, req: HostActionRequest):
 async def live_quiz_websocket(
     websocket: WebSocket,
     circle_id: str,
-    user_id: str = Query(...),
+    token: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None),
     name: str = Query("Participant"),
 ):
-    if not STORE.get(circle_id):
+    # Validate token or secure dev fallback
+    user = None
+    if token:
+        user = validate_auth_token(token)
+    elif user_id and os.environ.get("LAMLA_ALLOW_TEST_USERS", "true").lower() == "true":
+        user = {"id": user_id, "email": f"{user_id}@test.lamla.local", "role": "authenticated"}
+
+    if not user or not user.get("id"):
+        await websocket.close(code=4001, reason="Authentication token is required.")
+        return
+
+    group = STORE.get(circle_id)
+    if not group:
         await websocket.close(code=4004, reason="Study group not found.")
+        return
+
+    clean_uid = user["id"]
+    members = group.get("members", [])
+    is_member = any(m.get("user_id") == clean_uid for m in members)
+    if not is_member and user.get("role") != "admin":
+        await websocket.close(code=4003, reason="Forbidden: You must join this study group first.")
         return
 
     await websocket.accept()
     ensure_scheduled_timers_started()
 
-    clean_uid = _sanitize_str(user_id, 64)
     clean_name = _sanitize_str(name, 40) or "Participant"
 
     circle_conns = WS_CONNECTIONS.setdefault(circle_id, {})

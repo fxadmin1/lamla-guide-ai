@@ -21,6 +21,18 @@ import LiveQuizRoom, {
   QuizHistoryItem,
   RoomState,
 } from "@/components/LiveQuizRoom";
+import { supabase } from "@/lib/supabase";
+
+async function getAuthHeaders(includeJson: boolean = false): Promise<Record<string, string>> {
+  const headers: Record<string, string> = includeJson ? { "Content-Type": "application/json" } : {};
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers["Authorization"] = `Bearer ${session.access_token}`;
+    }
+  } catch {}
+  return headers;
+}
 
 export interface ClassCircle {
   id: string;
@@ -101,8 +113,10 @@ export default function ClassCirclesWorkspace({
     }
     setLoading(true);
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/study-groups?user_id=${encodeURIComponent(userId)}`, {
         cache: "no-store",
+        headers,
       });
       if (res.ok) {
         const json = await res.json();
@@ -121,9 +135,10 @@ export default function ClassCirclesWorkspace({
     async (circleId: string) => {
       if (!circleId) return;
       try {
+        const headers = await getAuthHeaders();
         const res = await fetch(
           `/api/study-groups/${encodeURIComponent(circleId)}?user_id=${encodeURIComponent(userId)}`,
-          { cache: "no-store" }
+          { cache: "no-store", headers }
         );
         if (res.ok) {
           const json = await res.json();
@@ -159,9 +174,10 @@ export default function ClassCirclesWorkspace({
 
     const autoJoin = async () => {
       try {
+        const headers = await getAuthHeaders(true);
         const res = await fetch("/api/study-groups/join", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({
             invite_code: code,
             user_id: userId,
@@ -201,9 +217,10 @@ export default function ClassCirclesWorkspace({
     setModalError("");
     setSubmittingModal(true);
     try {
+      const headers = await getAuthHeaders(true);
       const res = await fetch("/api/study-groups/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           name: newCircleName.trim(),
           course_code: newCourseCode.trim().toUpperCase(),
@@ -237,9 +254,10 @@ export default function ClassCirclesWorkspace({
     setModalError("");
     setSubmittingModal(true);
     try {
+      const headers = await getAuthHeaders(true);
       const res = await fetch("/api/study-groups/join", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           invite_code: joinCodeInput.trim().toUpperCase(),
           user_id: userId,
@@ -268,9 +286,10 @@ export default function ClassCirclesWorkspace({
   const handleUpdateRole = async (targetUserId: string, role: "assistant_admin" | "member" | "remove") => {
     if (!activeCircleId || !isOwner) return;
     try {
+      const headers = await getAuthHeaders(true);
       const res = await fetch(`/api/study-groups/${encodeURIComponent(activeCircleId)}/role`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           actor_user_id: userId,
           target_user_id: targetUserId,
@@ -316,8 +335,10 @@ export default function ClassCirclesWorkspace({
     setDeletingGroup(true);
     setDeleteError("");
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/study-groups/${encodeURIComponent(activeCircleId)}?user_id=${encodeURIComponent(userId)}`, {
         method: "DELETE",
+        headers,
       });
       const json = await res.json();
       if (!res.ok) {
@@ -340,9 +361,10 @@ export default function ClassCirclesWorkspace({
     if (!activeCircleId) return;
     setLeavingGroup(true);
     try {
+      const headers = await getAuthHeaders(true);
       const res = await fetch(`/api/study-groups/${encodeURIComponent(activeCircleId)}/role`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           actor_user_id: userId,
           target_user_id: userId,

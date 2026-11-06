@@ -40,11 +40,19 @@ export async function POST(req: NextRequest) {
     let text = "";
     let pages = 1;
 
+    const internalSecret = process.env["LAMLA_INTERNAL_SECRET"] || process.env.LAMLA_INTERNAL_SECRET || "lamla-internal-sec-2026-auth";
+    const authHeaders = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      "X-User-Id": user.id,
+      "X-Internal-Secret": internalSecret,
+    };
+
     if (lower.endsWith(".txt") || lower.endsWith(".md")) {
       text = await file.text();
       fetch(`${PYTHON_API_URL}/api/enrich-content`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders,
         body: JSON.stringify({ title: name, content: text.slice(0, 80000) }),
       }).catch(() => {});
     } else if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/.test(lower)) {
@@ -57,6 +65,11 @@ export async function POST(req: NextRequest) {
           pyForm.append("file", file, name);
           const pyRes = await fetch(`${candidateBase}/api/upload-and-parse`, {
             method: "POST",
+            headers: {
+              "Authorization": `Bearer ${token}`,
+              "X-User-Id": user.id,
+              "X-Internal-Secret": internalSecret,
+            },
             body: pyForm,
             signal: AbortSignal.timeout(240000),
           });
