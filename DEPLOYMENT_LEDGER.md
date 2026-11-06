@@ -45,7 +45,8 @@ All migrations are non-destructive (`IF NOT EXISTS`, zero table resets, 100% stu
 
 | Version | Commit | Date (UTC) | Scope & Verification Status |
 | :--- | :--- | :--- | :--- |
-| **`2.4.0`** | Latest (`HEAD`) | `2026-11-06` | Production synchronization suite (`/api/version`, `/health` commit telemetry, Docker 512MB/low-memory build hardening, secret removal from `Dockerfile`, GitHub Actions `production-ci-cd.yml`, `verify_production_live.py`, non-destructive SQL migration `20261106`). |
+| **`2.4.1`** | Latest (`HEAD`) | `2026-11-06` | Fixed Python 3.11 container startup `SyntaxError` in `python_ai/ai_engine.py:1707` (PEP 701 backslash inside f-string that passed on local Python 3.13 but crashed Render's `python:3.11-slim-bookworm` container on boot), added Python 3.11 AST gate to `test_system.py`, and added `python -m compileall` build-time gate to `Dockerfile`. |
+| `2.4.0` | `f4da2c8` | `2026-11-06` | Production synchronization suite (`/api/version`, `/health` commit telemetry, Docker 512MB/low-memory build hardening, secret removal from `Dockerfile`, GitHub Actions `production-ci-cd.yml`, `verify_production_live.py`, non-destructive SQL migration `20261106`). |
 | `2.3.1` | `6ae9e65` | `2026-11-06` | Frontend summary table-to-bullet sanitizer, textbook topic heading sanitizer, flashcard deck replacement, auth header fix on Smart Drill, Untimed quiz fix, PWA `lamla-cache-v4-20261106`. |
 | `2.3.0` | `858d168` | `2026-11-06` | 5-feature academic intelligence upgrade (Summary, Detailed Notes, Flashcards, 8-format Quizzes, 8-step YouTube Curator). |
 | `2.2.0` | `cc5470c` | `2026-11-06` | Multi-user data isolation, server-side Bearer JWT verification (`auth_validator.py`), per-user AI cache namespacing. |

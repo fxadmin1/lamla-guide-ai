@@ -255,6 +255,49 @@ def test_fastapi_endpoints_direct():
     print(f"✓ /api/evaluate-benchmark OK (Grade: {bench_res['results']['metrics']['overall_benchmark_grade']})")
 
 
+def test_python_311_container_syntax_compatibility():
+    """
+    Production containers (Dockerfile / GitHub Actions) run Python 3.11, whereas local
+    developer environments may run Python 3.12/3.13 (which permit PEP 701 backslashes
+    or reused quotes inside f-strings). This gate guarantees 100% Python 3.11 AST compatibility.
+    """
+    print("\n--- 8. Testing Python 3.11 Production Container AST Compatibility ---")
+    import ast
+
+    repo_root = _DIR.parent
+    py_files = sorted(list(repo_root.glob("*.py")) + list(_DIR.glob("*.py")))
+    violations = []
+
+    for p in py_files:
+        src = p.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=str(p))
+        for n in ast.walk(tree):
+            if hasattr(ast, "TypeAlias") and isinstance(n, ast.TypeAlias):
+                violations.append(f"{p.name}:{n.lineno} uses PEP 695 TypeAlias (Python 3.12+)")
+            if getattr(n, "type_params", None):
+                violations.append(f"{p.name}:{n.lineno} uses PEP 695 type_params (Python 3.12+)")
+            if isinstance(n, ast.JoinedStr):
+                full_seg = ast.get_source_segment(src, n) or ""
+                prefix_stripped = full_seg.lstrip("fFrRbBuU")
+                outer_q = None
+                for q in ('"""', "'''", '"', "'"):
+                    if prefix_stripped.startswith(q):
+                        outer_q = q
+                        break
+                for v in n.values:
+                    if isinstance(v, ast.FormattedValue):
+                        v_seg = ast.get_source_segment(src, v) or ""
+                        if "\\" in v_seg:
+                            violations.append(f"{p.name}:{v.lineno} has backslash inside f-string expr: {v_seg[:80]}")
+                        if "#" in v_seg:
+                            violations.append(f"{p.name}:{v.lineno} has comment '#' inside f-string expr: {v_seg[:80]}")
+                        if outer_q and outer_q in v_seg:
+                            violations.append(f"{p.name}:{v.lineno} reuses outer quote ({outer_q}) inside f-string expr: {v_seg[:80]}")
+
+    assert len(violations) == 0, "Python 3.11 syntax compatibility violations:\n  " + "\n  ".join(violations)
+    print(f"✓ Verified {len(py_files)} Python source files are 100% Python 3.11 container-compatible")
+
+
 if __name__ == "__main__":
     print("==================================================================")
     print("LAMLA Guide AI - Advanced Academic Intelligence Engine Test Suite")
@@ -267,8 +310,9 @@ if __name__ == "__main__":
         test_python_ai_engine()
         test_benchmark_suite()
         test_fastapi_endpoints_direct()
+        test_python_311_container_syntax_compatibility()
         print("\n==================================================================")
-        print("ALL 7 TEST SUITES PASSED! ACADEMIC INTELLIGENCE ENGINE IS ROCK-SOLID!")
+        print("ALL 8 TEST SUITES PASSED! ACADEMIC INTELLIGENCE ENGINE IS ROCK-SOLID!")
         print("==================================================================")
     except Exception as e:
         print(f"\n❌ TEST FAILED: {e}")

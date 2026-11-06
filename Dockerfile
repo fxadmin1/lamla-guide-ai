@@ -48,9 +48,10 @@ ENV GIT_COMMIT_SHA=$RENDER_GIT_COMMIT \
     LAMLA_ENV=production \
     PYTHONUNBUFFERED=1
 
-# 4. Pre-build Next.js production bundle with bounded V8 heap & single-worker mode
-#    so cloud Docker builders never hit cgroup OOM kills
-RUN NODE_OPTIONS="--max-old-space-size=1536" npm run build \
+# 4. Validate Python 3.11 bytecode compilation & pre-build Next.js production bundle
+#    with bounded V8 heap & single-worker mode so cloud Docker builders never OOM
+RUN python -m compileall -q -f app.py python_ai \
+ && NODE_OPTIONS="--max-old-space-size=1536" npm run build \
  && mkdir -p /app/.cache/lamla_data \
  && chmod -R 777 /app/.cache
 

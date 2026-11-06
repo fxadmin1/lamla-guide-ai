@@ -1692,6 +1692,7 @@ MANDATORY ACADEMIC SUMMARY RULES:
                     f"Across the lecture, the subject develops logically from foundational definitions and structural classifications to active mechanisms, comparative distinctions, and real-world applications. This summary synthesizes that complete progression so you can master the core knowledge cohesively.\n\n"
                 )
             )
+            joined_thematic_sections = "\n\n---\n\n".join(thematic_sections)
             raw_fallback = (
                 f"# {main_topic} — Comprehensive Academic Summary\n\n"
                 f"## 1. Foundational Overview & Core Principles\n\n"
@@ -1704,7 +1705,7 @@ MANDATORY ACADEMIC SUMMARY RULES:
                 f"The conceptual architecture above illustrates how the foundational components of **{main_topic}** drive intermediate mechanisms and produce functional, clinical, or practical outcomes.\n\n"
                 f"---\n\n"
                 f"## 3. Core Academic Topics, Mechanisms & Processes\n\n"
-                f"{chr(10) + chr(10) + ('\n\n---\n\n'.join(thematic_sections))}\n\n"
+                f"\n\n{joined_thematic_sections}\n\n"
                 f"---\n\n"
                 f"## 4. Inter-Concept Relationships & Key Distinctions\n\n"
                 f"{relationships_block}"
