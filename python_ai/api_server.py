@@ -44,11 +44,15 @@ try:
     from ai_engine import PythonAIEngine
     from live_quiz_hub import router as live_quiz_router
     from web_enrichment import schedule_background_enrichment, build_labeled_concept_svg, research_topic_from_web
+    from academic_knowledge import AcademicKnowledgeBuilder, AcademicKnowledgeRepresentation
+    from benchmark_suite import AcademicBenchmarkRunner
 except ImportError:
     from python_ai.document_processor import DocumentProcessor
     from python_ai.ai_engine import PythonAIEngine
     from python_ai.live_quiz_hub import router as live_quiz_router
     from python_ai.web_enrichment import schedule_background_enrichment, build_labeled_concept_svg, research_topic_from_web
+    from python_ai.academic_knowledge import AcademicKnowledgeBuilder, AcademicKnowledgeRepresentation
+    from python_ai.benchmark_suite import AcademicBenchmarkRunner
 
 app = FastAPI(
     title="LAMLA Guide AI - Python AI Core",
@@ -396,6 +400,13 @@ async def upload_and_parse(file: UploadFile = File(...)):
         result["title"] = clean_filename
         result["file_size_bytes"] = file_size
 
+        # Build unified Academic Blueprint representation
+        try:
+            blueprint = AcademicKnowledgeBuilder.build_from_parsed_document(result, domain_hint=clean_filename)
+            result["academic_blueprint"] = blueprint.to_dict()
+        except Exception:
+            pass
+
         # Store compact representation in bounded parse cache (avoid holding huge duplicate page arrays in RAM)
         compact_cached = {
             "document_type": result.get("document_type"),
@@ -641,6 +652,47 @@ def ai_tutor_dialogue(req: TutorRequest):
             "answer": response,
             "handled_by": ai_engine.active_model_name
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class AcademicBlueprintRequest(BaseModel):
+    content: str
+    title: Optional[str] = "Academic Presentation"
+
+@app.post("/api/academic-blueprint")
+def generate_academic_blueprint(req: AcademicBlueprintRequest):
+    """
+    Returns the unified multi-dimensional academic knowledge representation
+    including concepts, mechanisms, comparisons, structures, coverage, and markdown rendering.
+    """
+    try:
+        raw_doc = processor.process_text(req.content, req.title or "Presentation")
+        bp = AcademicKnowledgeBuilder.build_from_parsed_document(raw_doc, domain_hint=req.title or "")
+        return {
+            "success": True,
+            "blueprint": bp.to_dict(),
+            "rendered_markdown": bp.render_blueprint_markdown(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class EvaluateBenchmarkRequest(BaseModel):
+    dataset_name: Optional[str] = "autonomic_pharmacology"
+
+@app.post("/api/evaluate-benchmark")
+def evaluate_academic_benchmark(req: EvaluateBenchmarkRequest):
+    """
+    Runs automated academic evaluation across benchmark datasets (Autonomic Pharmacology,
+    Cellular Respiration, Macroeconomics) measuring coverage %, zero-slide leak compliance,
+    assertion-reasoning strictness, distractor plausibility, and speed.
+    """
+    try:
+        runner = AcademicBenchmarkRunner(ai_engine=ai_engine)
+        if req.dataset_name and req.dataset_name.lower() == "all":
+            results = runner.run_all_benchmarks()
+        else:
+            results = runner.run_benchmark(req.dataset_name or "autonomic_pharmacology")
+        return {"success": True, "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

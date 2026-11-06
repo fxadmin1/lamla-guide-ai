@@ -18,7 +18,17 @@ import math
 import io
 import zipfile
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
+
+try:
+    import pymupdf
+    HAS_PYMUPDF = True
+except ImportError:
+    try:
+        import fitz as pymupdf
+        HAS_PYMUPDF = True
+    except ImportError:
+        HAS_PYMUPDF = False
 
 import pypdf
 import docx
@@ -236,6 +246,8 @@ class DocumentProcessor:
             )
 
         full_document_text = "\n\n".join(full_text_parts)
+        processed_count = max(len(prs.slides) - len(unreadable_slides), 0)
+        coverage_pct = (processed_count / max(len(prs.slides), 1)) * 100.0 if prs.slides else 100.0
 
         return {
             "document_type": "pptx",
@@ -243,6 +255,7 @@ class DocumentProcessor:
             "total_slides": len(prs.slides),
             "slides": slides_data,
             "unreadable_slides": unreadable_slides,
+            "coverage_percentage": round(coverage_pct, 1),
             "full_text": full_document_text,
             "key_concepts": self.extract_key_concepts(full_document_text),
         }
@@ -250,70 +263,169 @@ class DocumentProcessor:
     def process_pdf(self, file_path_or_bytes: Any) -> Dict[str, Any]:
         """
         Parses a PDF document (.pdf) page by page from start to finish with full text,
-        embedded image OCR fallback for scanned pages, and honest coverage reporting.
+        multi-column layout preservation, vector table extraction, embedded image OCR fallback
+        for scanned pages, and honest coverage reporting.
         """
-        if isinstance(file_path_or_bytes, (str, os.PathLike)):
-            reader = pypdf.PdfReader(file_path_or_bytes)
-            filename = os.path.basename(str(file_path_or_bytes))
-        else:
-            reader = pypdf.PdfReader(io.BytesIO(file_path_or_bytes))
-            filename = "document.pdf"
+        filename = (
+            os.path.basename(str(file_path_or_bytes))
+            if isinstance(file_path_or_bytes, (str, os.PathLike))
+            else "document.pdf"
+        )
 
         pages_data: List[Dict[str, Any]] = []
         full_text_parts: List[str] = []
         unreadable_pages: List[int] = []
         ocr_calls_made = 0
+        total_pages = 0
 
-        for page_index, page in enumerate(reader.pages, start=1):
+        # Preference 1: PyMuPDF (fitz) for vector tables & block layout
+        if HAS_PYMUPDF:
             try:
-                extracted = page.extract_text() or ""
-            except Exception:
-                extracted = ""
-            cleaned = self.clean_text(extracted)
+                if isinstance(file_path_or_bytes, (str, os.PathLike)):
+                    doc = pymupdf.open(file_path_or_bytes)
+                else:
+                    raw_bytes = file_path_or_bytes if isinstance(file_path_or_bytes, bytes) else file_path_or_bytes.read()
+                    doc = pymupdf.open(stream=raw_bytes, filetype="pdf")
 
-            # Attempt OCR on scanned/image-only PDF pages (up to 5 pages per document for fast response)
-            if len(cleaned) < 30 and ocr_calls_made < 5:
-                try:
-                    imgs = getattr(page, "images", []) or []
-                    if imgs:
-                        import base64
-                        from ai_engine import PythonAIEngine
-                        engine = PythonAIEngine()
-                        first_img = imgs[0]
-                        b64_img = base64.b64encode(first_img.data).decode("utf-8")
-                        ext = (first_img.name.rsplit(".", 1)[-1].lower() if "." in first_img.name else "jpeg")
-                        mime = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
-                        ocr_txt = engine.call_gemini_vision(
-                            "Transcribe all academic text, headings, tables, and diagram labels from this page.",
-                            image_base64=b64_img,
-                            mime_type=mime,
+                total_pages = len(doc)
+                for page_index in range(1, total_pages + 1):
+                    page = doc[page_index - 1]
+                    page_text = page.get_text("text") or ""
+
+                    # Extract structured vector tables if present
+                    table_markdown_blocks = []
+                    try:
+                        if hasattr(page, "find_tables"):
+                            tabs = page.find_tables()
+                            for t_idx, tab in enumerate(tabs, start=1):
+                                t_data = tab.extract()
+                                if t_data and len(t_data) >= 1:
+                                    t_rows = []
+                                    for r_idx, row in enumerate(t_data):
+                                        clean_row = [re.sub(r"\s+", " ", str(c or "").strip()) for c in row]
+                                        if any(clean_row):
+                                            t_rows.append("| " + " | ".join(c or "-" for c in clean_row) + " |")
+                                            if r_idx == 0:
+                                                t_rows.append("| " + " | ".join("---" for _ in clean_row) + " |")
+                                    if t_rows:
+                                        table_markdown_blocks.append(f"[Table {t_idx}]:\n" + "\n".join(t_rows))
+                    except Exception:
+                        pass
+
+                    if table_markdown_blocks:
+                        page_text = page_text + "\n\n" + "\n\n".join(table_markdown_blocks)
+
+                    cleaned = self.clean_text(page_text)
+
+                    # Vision OCR for scanned or image-dominated pages
+                    if len(cleaned) < 30 and ocr_calls_made < 5:
+                        try:
+                            img_list = page.get_images()
+                            if img_list:
+                                xref = img_list[0][0]
+                                base_img = doc.extract_image(xref)
+                                img_bytes = base_img.get("image")
+                                img_ext = base_img.get("ext", "png").lower()
+                                if img_bytes and len(img_bytes) > 2048:
+                                    import base64
+                                    from ai_engine import PythonAIEngine
+                                    engine = PythonAIEngine()
+                                    b64_img = base64.b64encode(img_bytes).decode("utf-8")
+                                    mime = f"image/{'jpeg' if img_ext in ('jpg', 'jpeg') else img_ext}"
+                                    ocr_txt = engine.call_gemini_vision(
+                                        "Transcribe all academic text, headings, formulas, and diagram labels from this page with 100% precision.",
+                                        image_base64=b64_img,
+                                        mime_type=mime,
+                                    )
+                                    ocr_calls_made += 1
+                                    if ocr_txt and len(ocr_txt.strip()) > 15:
+                                        cleaned = (cleaned + "\n" + self.clean_text(ocr_txt)).strip()
+                        except Exception:
+                            pass
+
+                    if len(cleaned) < 15:
+                        unreadable_pages.append(page_index)
+                        cleaned = (
+                            f"[Note: Page {page_index} appears to be a scanned image or graphic whose text "
+                            f"could not be fully extracted.]"
                         )
-                        ocr_calls_made += 1
-                        if ocr_txt and len(ocr_txt.strip()) > 15:
-                            cleaned = (cleaned + "\n" + self.clean_text(ocr_txt)).strip()
+
+                    lines = [l.strip() for l in cleaned.split("\n") if l.strip()]
+                    page_title = lines[0][:80] if lines else f"Page {page_index}"
+                    page_repr = f"--- Page {page_index}: {page_title} ---\n{cleaned}"
+                    full_text_parts.append(page_repr)
+
+                    pages_data.append({
+                        "page_number": page_index,
+                        "title": page_title,
+                        "content": cleaned,
+                        "full_page_text": page_repr,
+                        "has_visual_warning": page_index in unreadable_pages,
+                    })
+
+                doc.close()
+            except Exception:
+                # If PyMuPDF encounter unexpected error, fallback to pypdf
+                pages_data.clear()
+                full_text_parts.clear()
+                unreadable_pages.clear()
+
+        # Preference 2: pypdf fallback
+        if not pages_data:
+            if isinstance(file_path_or_bytes, (str, os.PathLike)):
+                reader = pypdf.PdfReader(file_path_or_bytes)
+            else:
+                reader = pypdf.PdfReader(io.BytesIO(file_path_or_bytes if isinstance(file_path_or_bytes, bytes) else file_path_or_bytes.read()))
+
+            total_pages = len(reader.pages)
+            for page_index, page in enumerate(reader.pages, start=1):
+                try:
+                    extracted = page.extract_text() or ""
                 except Exception:
-                    pass
+                    extracted = ""
+                cleaned = self.clean_text(extracted)
 
-            if len(cleaned) < 15:
-                unreadable_pages.append(page_index)
-                cleaned = (
-                    f"[Note: Page {page_index} appears to be a scanned image or graphic whose text "
-                    f"could not be fully extracted.]"
-                )
+                if len(cleaned) < 30 and ocr_calls_made < 5:
+                    try:
+                        imgs = getattr(page, "images", []) or []
+                        if imgs:
+                            import base64
+                            from ai_engine import PythonAIEngine
+                            engine = PythonAIEngine()
+                            first_img = imgs[0]
+                            b64_img = base64.b64encode(first_img.data).decode("utf-8")
+                            ext = (first_img.name.rsplit(".", 1)[-1].lower() if "." in first_img.name else "jpeg")
+                            mime = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
+                            ocr_txt = engine.call_gemini_vision(
+                                "Transcribe all academic text, headings, tables, and diagram labels from this page.",
+                                image_base64=b64_img,
+                                mime_type=mime,
+                            )
+                            ocr_calls_made += 1
+                            if ocr_txt and len(ocr_txt.strip()) > 15:
+                                cleaned = (cleaned + "\n" + self.clean_text(ocr_txt)).strip()
+                    except Exception:
+                        pass
 
-            lines = [l.strip() for l in cleaned.split("\n") if l.strip()]
-            page_title = lines[0][:80] if lines else f"Page {page_index}"
+                if len(cleaned) < 15:
+                    unreadable_pages.append(page_index)
+                    cleaned = (
+                        f"[Note: Page {page_index} appears to be a scanned image or graphic whose text "
+                        f"could not be fully extracted.]"
+                    )
 
-            page_repr = f"--- Page {page_index}: {page_title} ---\n{cleaned}"
-            full_text_parts.append(page_repr)
+                lines = [l.strip() for l in cleaned.split("\n") if l.strip()]
+                page_title = lines[0][:80] if lines else f"Page {page_index}"
+                page_repr = f"--- Page {page_index}: {page_title} ---\n{cleaned}"
+                full_text_parts.append(page_repr)
 
-            pages_data.append({
-                "page_number": page_index,
-                "title": page_title,
-                "content": cleaned,
-                "full_page_text": page_repr,
-                "has_visual_warning": page_index in unreadable_pages,
-            })
+                pages_data.append({
+                    "page_number": page_index,
+                    "title": page_title,
+                    "content": cleaned,
+                    "full_page_text": page_repr,
+                    "has_visual_warning": page_index in unreadable_pages,
+                })
 
         if unreadable_pages:
             p_str = ", ".join(str(p) for p in unreadable_pages)
@@ -323,13 +435,16 @@ class DocumentProcessor:
             )
 
         full_document_text = "\n\n".join(full_text_parts)
+        processed_count = max(total_pages - len(unreadable_pages), 0)
+        coverage_pct = (processed_count / max(total_pages, 1)) * 100.0 if total_pages > 0 else 100.0
 
         return {
             "document_type": "pdf",
             "title": filename,
-            "total_pages": len(reader.pages),
+            "total_pages": total_pages,
             "pages": pages_data,
             "unreadable_pages": unreadable_pages,
+            "coverage_percentage": round(coverage_pct, 1),
             "full_text": full_document_text,
             "key_concepts": self.extract_key_concepts(full_document_text),
         }
