@@ -312,7 +312,7 @@ export default function StudentDashboardPage() {
   const [materialsText, setMaterialsText] = useState("");
   const [initialQuizCount, setInitialQuizCount] = useState(5);
   const [initialQuizType, setInitialQuizType] = useState<
-    "mcq" | "true_false" | "short_answer" | "assertion_reasoning" | "matching" | "fill_in_the_blank" | "application" | "mixed"
+    "mcq" | "multiple_select" | "true_false" | "short_answer" | "assertion_reasoning" | "matching" | "fill_in_the_blank" | "application" | "mixed"
   >("mcq");
   const [initialQuizDifficulty, setInitialQuizDifficulty] = useState("intermediate");
   const [modalLoading, setModalLoading] = useState(false);
@@ -344,7 +344,7 @@ export default function StudentDashboardPage() {
   const [showQuizModal, setShowQuizModal] = useState(false);
   const [quizQuestionCount, setQuizQuestionCount] = useState(5);
   const [quizQuestionType, setQuizQuestionType] = useState<
-    "mcq" | "true_false" | "short_answer" | "assertion_reasoning" | "matching" | "fill_in_the_blank" | "application" | "mixed"
+    "mcq" | "multiple_select" | "true_false" | "short_answer" | "assertion_reasoning" | "matching" | "fill_in_the_blank" | "application" | "mixed"
   >("mcq");
   const [quizDifficulty, setQuizDifficulty] = useState("intermediate");
   const [quizRevealMode, setQuizRevealMode] = useState<"immediate" | "on_submit">("immediate");
@@ -5907,14 +5907,15 @@ export default function StudentDashboardPage() {
                         onChange={(e: any) => setInitialQuizType(e.target.value)}
                         className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
                       >
-                        <option value="mcq">Multiple Choice</option>
+                        <option value="mcq">Single-Best-Answer MCQ</option>
+                        <option value="multiple_select">Multiple-Select (Roman I–IV)</option>
                         <option value="assertion_reasoning">Assertion &amp; Reasoning</option>
                         <option value="true_false">True / False</option>
-                        <option value="application">Application-Based</option>
+                        <option value="application">Clinical / Scenario Application</option>
                         <option value="matching">Matching</option>
-                        <option value="fill_in_the_blank">Fill-in-the-Blank</option>
+                        <option value="fill_in_the_blank">Fill-in-the-Gap</option>
                         <option value="short_answer">Short Answer</option>
-                        <option value="mixed">Mixed Exam Format</option>
+                        <option value="mixed">Mixed Exam Format (All 8 Types)</option>
                       </select>
                     </div>
 
@@ -6064,16 +6065,17 @@ export default function StudentDashboardPage() {
                 <span className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                   Question format
                 </span>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {[
-                    { id: "mcq", label: "Multiple Choice" },
+                    { id: "mcq", label: "Single-Best MCQ" },
+                    { id: "multiple_select", label: "Multiple-Select" },
                     { id: "assertion_reasoning", label: "Assertion–Reason" },
                     { id: "true_false", label: "True / False" },
-                    { id: "application", label: "Application-Based" },
+                    { id: "application", label: "Scenario / Clinical" },
                     { id: "matching", label: "Matching" },
-                    { id: "fill_in_the_blank", label: "Fill-in-the-Blank" },
+                    { id: "fill_in_the_blank", label: "Fill-in-the-Gap" },
                     { id: "short_answer", label: "Short Answer" },
-                    { id: "mixed", label: "Mixed Exam" },
+                    { id: "mixed", label: "Mixed Exam (All 8)" },
                   ].map((t) => (
                     <button
                       key={t.id}

@@ -551,6 +551,41 @@ function convertBulletsToFlowingProse(markdown: string): string {
   return outLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function sanitizeSummaryOutput(markdown: string, mainTopic: string): string {
+  const outLines: string[] = [];
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const stripped = rawLine.trim();
+    // Never include Markdown tables in Summary
+    if (stripped.startsWith("|") && stripped.endsWith("|")) {
+      if (/^\|[\s:|-]+\|$/.test(stripped)) continue;
+      const cells = stripped
+        .split("|")
+        .map((c) => c.trim())
+        .filter(Boolean);
+      if (cells.length >= 2 && !/^(slide|topic|concept|section)\b/i.test(cells[0].replace(/[*_`]/g, ""))) {
+        outLines.push(`- **${cells[0].replace(/\*\*/g, "")}:** ${cells.slice(1).join(" — ")}`);
+      }
+      continue;
+    }
+    let cleaned = rawLine;
+    if (stripped.startsWith("#")) {
+      cleaned = cleaned.replace(
+        /^(#{1,6}\s*)(?:Slide|Page)\s*\d+\s*(?:Summary|Overview)?\s*[:\-—]?\s*/i,
+        "$1"
+      );
+      cleaned = cleaned.replace(/\s*\[(?:Source:\s*)?(?:Slide|Page)\s*\d+\]/gi, "");
+      if (/^#{1,6}\s*$/.test(cleaned.trim())) {
+        cleaned = `### ${mainTopic} — Core Principles`;
+      }
+    } else {
+      cleaned = cleaned.replace(/\s*\[(?:Source:\s*)?(?:Slide|Page)\s*\d+\]/gi, "");
+      cleaned = cleaned.replace(/\b(?:on|in)\s+(?:slide|page)\s+(?:one|two|three|four|five|\d+)\b/gi, "in this lecture");
+    }
+    outLines.push(cleaned);
+  }
+  return outLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function buildDeterministicSummary(content: string, mainTopicWebBrief: string = ""): string {
   const slides = parseSlidesFromContent(content);
   const mainTopic = extractMainTopicTitle(slides);
@@ -558,8 +593,8 @@ function buildDeterministicSummary(content: string, mainTopicWebBrief: string = 
   const transitions = [
     "At the foundation of this subject,",
     "Building directly upon these principles,",
-    "Furthermore, as the lecture progresses,",
-    "From a mechanistic and operational standpoint,",
+    "Furthermore, as the mechanism progresses,",
+    "From a functional and analytical standpoint,",
     "Integrating these concepts into practice,",
   ];
 
@@ -570,48 +605,46 @@ function buildDeterministicSummary(content: string, mainTopicWebBrief: string = 
     });
     const lead = transitions[idx % transitions.length];
     const firstPara = `${lead} **${s.title}** represents a vital component of **${mainTopic}**. ${cleanSentences.slice(0, 3).join(" ")}`;
+    const bulletBlock =
+      cleanSentences.length > 2
+        ? "\n\n" +
+          cleanSentences
+            .slice(1, 4)
+            .map((fact) => `- **${extractConceptFocusFromFact(fact, s.title)}:** ${fact}`)
+            .join("\n")
+        : "";
     const secondPara =
       cleanSentences.length > 3
-        ? `${cleanSentences.slice(3).join(" ")} Together, these relationships explain how **${s.title}** operates within the broader academic framework and prepares the foundation for subsequent stages of the material.`
-        : `By understanding the underlying mechanism of **${s.title}**, you can trace how changes in initial conditions directly shape the resulting system behavior across **${mainTopic}**.`;
+        ? `\n\n${cleanSentences.slice(3).join(" ")} Together, these relationships explain how **${s.title}** operates within the broader academic framework of **${mainTopic}**.`
+        : `\n\nBy understanding the underlying mechanism of **${s.title}**, you can trace how changes in initial conditions directly shape the resulting system behavior across **${mainTopic}**.`;
 
-    return `### ${s.title}\n\n${firstPara}\n\n${secondPara}`;
+    return `### 3.${idx + 1} ${s.title}\n\n${firstPara}${bulletBlock}${secondPara}`;
   });
 
-  const tableRows = slides.slice(0, 16).map((s) => {
-    const defn = s.facts[0]?.slice(0, 130) || s.title;
-    const takeaway = s.facts[1]?.slice(0, 110) || "High-yield core mechanism & exam principle";
-    return `| **${s.title.slice(0, 44)}** | ${defn} | ${takeaway} |`;
+  const synthesisPoints = slides.slice(0, 12).map((s) => {
+    const defn = s.facts[0]?.slice(0, 160) || s.title;
+    const mechanism = s.facts[1]?.slice(0, 140) || "";
+    return `- **${s.title}:** ${defn}${mechanism ? " Furthermore, " + mechanism[0].toLowerCase() + mechanism.slice(1) : ""}`;
   });
-
-  const flowChain = slides
-    .slice(0, 7)
-    .map((s) => `[${s.title.slice(0, 28)}]`)
-    .join(" ──▶ ");
 
   const overviewTopics = slides.slice(0, 8).map((s) => s.title).join(", ") || mainTopic;
   const webParagraph = mainTopicWebBrief
     ? `${mainTopicWebBrief}\n\n`
-    : `Across the entire lecture, the concepts progress systematically from foundational definitions to active mechanisms and real-world applications. Rather than listing isolated fragments, this summary connects every section into flowing, readable prose so you can understand how the entire subject fits together.\n\n`;
+    : `Across the entire lecture, the concepts progress systematically from foundational definitions to active mechanisms and real-world applications. Rather than listing isolated fragments or a table of slides, this summary explains the actual subject matter in connected paragraphs and structured key points.\n\n`;
 
-  return (
-    `# 🧭 COMPREHENSIVE MASTER SUMMARY: ${mainTopic.toUpperCase()}\n\n` +
-    `## 1. 🌐 Executive Narrative Synthesis of the Main Topic\n\n` +
-    `This comprehensive study summary synthesizes the entire subject matter on **${mainTopic}** across all **${slides.length} substantive sections** (${overviewTopics}), bypassing introductory institutional cover pages to focus strictly on core definitions, mechanisms, causal pathways, and examinable principles.\n\n` +
+  const rawMd =
+    `# ${mainTopic} — Comprehensive Academic Summary\n\n` +
+    `## 1. Foundational Overview & Core Principles\n\n` +
+    `This academic summary synthesizes the core subject matter on **${mainTopic}** (${overviewTopics}), focusing on essential definitions, step-by-step mechanisms, classifications, and conceptual relationships.\n\n` +
     `${webParagraph}` +
-    `---\n\n` +
-    `## 2. 🏛️ Complete Thematic Narrative Across the Material\n\n` +
-    `${narrativeSections.join("\n\n\n")}\n\n` +
-    `---\n\n` +
-    `## 3. 🔑 Master High-Yield Glossary & Concept Matrix\n\n` +
-    `| Core Concept / Sub-Topic | Formal Definition & Mechanism | Key Exam Takeaway |\n` +
-    `| :--- | :--- | :--- |\n` +
-    `${tableRows.join("\n")}\n\n` +
-    `---\n\n` +
-    `## 4. 📊 End-to-End Conceptual Progression & Concluding Synthesis\n\n` +
-    `\`\`\`flowchart\n${flowChain || `[${mainTopic}]`}\n\`\`\`\n\n` +
-    `In conclusion, mastering **${mainTopic}** requires understanding how each concept transitions smoothly into the next stage of the process. Examiners frequently test whether you can distinguish the primary causal mechanism of **${mainTopic}** from secondary effects, as well as how boundary conditions govern its real-world behavior in both Multiple Choice and Assertion-Reasoning questions.\n`
-  );
+    `## 2. Core Academic Topics, Mechanisms & Processes\n\n` +
+    `${narrativeSections.join("\n\n")}\n\n` +
+    `## 3. Inter-Concept Relationships & Key Takeaways\n\n` +
+    `Understanding **${mainTopic}** requires connecting each mechanism and classification across the entire lecture:\n\n` +
+    `${synthesisPoints.join("\n")}\n\n` +
+    `In conclusion, mastering **${mainTopic}** depends on tracing how foundational definitions govern active physiological, analytical, or practical processes and distinguishing primary causal pathways from secondary effects.\n`;
+
+  return sanitizeSummaryOutput(rawMd, mainTopic);
 }
 
 function extractConceptFocusFromFact(fact: string, fallbackTitle: string): string {
@@ -685,6 +718,7 @@ async function fetchSlideWebNotesMap(slides: ParsedSlide[], mainTopic: string): 
 
 function buildDetailedSlideSection(
   s: ParsedSlide,
+  sectionNumber: number,
   mainTopic: string,
   nextSlide?: ParsedSlide,
   webContext?: string
@@ -704,34 +738,36 @@ function buildDetailedSlideSection(
     .map((pt, cIdx) => {
       const focus = extractConceptFocusFromFact(pt, s.title);
       return (
-        `#### 🔹 Concept ${cIdx + 1}: ${focus}\n\n` +
-        `- **Core Statement from Slide:** ${pt}\n\n` +
-        `- **In-Depth Academic Explanation:** Within **${s.title}** (a key area of **${mainTopic}**), **${focus}** establishes a fundamental principle. Instead of viewing this line in isolation, note how it defines the relationship between the underlying components on **${s.label}** and explains why the system behaves this way.\n\n` +
-        `- **Step-by-Step Mechanism & Cause-Effect Logic:** First, identify the governing condition or input associated with **${focus}**. Second, trace the active mechanism described by *"${pt}"*. Third, observe the direct outcome or functional effect on **${s.title}**.\n\n` +
-        `- **Practical Example & Exam Application:** In university and SHS exams, questions on **${focus}** test whether you can accurately apply this principle to real-world scenarios and avoid common traps such as reversing cause and effect.`
+        `#### ${sectionNumber}.${cIdx + 1} ${focus}\n\n` +
+        `- **Core Statement from Lecture:** ${pt}\n\n` +
+        `- **In-Depth Academic Explanation:** Within **${s.title}** (a key domain of **${mainTopic}**), **${focus}** establishes a foundational principle. Rather than viewing this concept in isolation, note how it defines the functional relationship between the underlying components of **${s.title}** and explains why the system operates this way.\n\n` +
+        `- **Step-by-Step Mechanism & Cause-Effect Logic:** First, identify the governing stimulus, condition, or input associated with **${focus}**. Second, trace the active mechanism described by *"${pt}"*. Third, observe the resulting physiological, analytical, or functional outcome within **${s.title}**.\n\n` +
+        `- **Clinical / Practical Application & Exam Focus:** In university examinations, questions on **${focus}** test whether you can apply this mechanism to novel scenarios and distinguish primary causes from downstream effects.`
       );
     })
     .join("\n\n\n");
 
+  const cleanTopicQuery = encodeURIComponent(`${s.title} ${mainTopic}`.trim());
   const internetBlock = webContext
-    ? `### 🌐 Internet & Textbook Knowledge Expansion (Explaining Unexplained Slide Concepts)\n\n` +
-      `${webContext}\n\n` +
-      `**How This Expands the Slide:** Because lecture slides condense **${s.title}** into brief bullet points, this external academic reference provides the deeper background mechanism, theoretical foundation, and textbook context needed for complete mastery of **${s.label}**.`
-    : `### 🌐 Internet & Textbook Knowledge Expansion (Filling Slide Gaps)\n\n` +
-      `Lecture slides often summarize **${s.title}** in brief bullet points without spelling out the full background context. In broader academic literature and real-world practice on **${mainTopic}**, **${s.title}** works by linking structural or theoretical inputs directly to measurable outcomes. Whenever a slide mentions a term, formula, or rule under **${s.title}** briefly, pay close attention to *why* the process initiates, *how* each stage progresses step by step, and *what boundary conditions* govern its behavior in examination scenarios.`;
+    ? `### Supplementary Academic Context & Textbook Expansion\n\n` +
+      `*Supplementary Explanation (Beyond Lecture Text):* ${webContext}\n\n` +
+      `- **Verified Reference Links:** [Wikipedia Academic Overview — ${s.title}](https://en.wikipedia.org/wiki/Special:Search?search=${cleanTopicQuery}) | [NCBI Bookshelf — ${mainTopic}](https://www.ncbi.nlm.nih.gov/books/?term=${cleanTopicQuery})`
+    : `### Supplementary Academic Context & Textbook Expansion\n\n` +
+      `*Supplementary Explanation (Expanding Brief Lecture Points):* Lecture slides often condense **${s.title}** into brief bullet points. In authoritative university textbooks on **${mainTopic}**, **${s.title}** operates by coupling specific structural or theoretical inputs directly to regulated functional outputs. Pay close attention to *why* the mechanism initiates, *how* each intermediate step is regulated, and *what clinical or practical consequences* arise when this pathway is altered.\n\n` +
+      `- **Verified Reference Links:** [NCBI Bookshelf — ${s.title}](https://www.ncbi.nlm.nih.gov/books/?term=${cleanTopicQuery}) | [Wikipedia Academic Reference — ${s.title}](https://en.wikipedia.org/wiki/Special:Search?search=${cleanTopicQuery})`;
 
   return (
-    `## ${s.label} — ${s.title} [Source: ${s.label}]\n\n` +
-    `### 📌 Complete Slide Statements & Key Principles\n\n` +
+    `## ${sectionNumber}. ${s.title}\n\n` +
+    `### Core Lecture Concepts (From Uploaded Lecture)\n\n` +
     `${bulletItems}\n\n` +
-    `### 🔬 Concept-by-Concept Deep Explanation (Every Slide Concept Explained in Full)\n\n` +
+    `### Definitions, Mechanisms & Step-by-Step Analysis\n\n` +
     `${conceptBreakdowns}\n\n` +
     `${internetBlock}\n\n` +
-    `### 🎯 Exam Takeaway & Slide Progression\n\n` +
-    `- **Core Exam Takeaway:** Master the exact definition, step-by-step mechanism, and directional cause-and-effect relationship of every concept on **${s.label} (${s.title})**.\n\n` +
+    `### Relationships to Other Topics & Key Takeaways\n\n` +
+    `- **High-Yield Examination Takeaway:** Master the formal definition, step-by-step mechanism, and directional cause-and-effect relationship of every concept under **${s.title}**.\n\n` +
     (nextSlide
-      ? `- **Connection to Next Slide:** Having thoroughly unpacked **${s.title}**, we now move directly to **${nextSlide.label} (${nextSlide.title})**.\n`
-      : `- **Module Completion:** This completes the comprehensive slide-by-slide progression for **${mainTopic}**.\n`)
+      ? `- **Conceptual Progression:** Having established the principles of **${s.title}**, the next section examines **${nextSlide.title}**.\n`
+      : `- **Synthesis Complete:** This concludes the comprehensive textbook study notes for **${mainTopic}**.\n`)
   );
 }
 
@@ -740,12 +776,12 @@ function buildDeterministicNotes(content: string, webNotesMap: Record<number, st
   const mainTopic = extractMainTopicTitle(slides);
 
   const slideSections = slides.map((s, idx) =>
-    buildDetailedSlideSection(s, mainTopic, slides[idx + 1], webNotesMap[s.num])
+    buildDetailedSlideSection(s, idx + 1, mainTopic, slides[idx + 1], webNotesMap[s.num])
   );
 
   return (
-    `# 📚 DETAILED SLIDE-BY-SLIDE STUDY NOTES: ${mainTopic.toUpperCase()}\n\n` +
-    `> **Comprehensive Concept-by-Concept Study Guide:** These detailed notes skip introductory school/department title pages and move systematically from one substantive slide to the next with open, breathable spacing, deep explanations of every single concept on every slide, and internet/textbook expansions for concepts briefly mentioned on the slides.\n\n` +
+    `# ${mainTopic} — Comprehensive University Study Notes\n\n` +
+    `> **Authoritative Academic Study Guide:** Organized under meaningful academic topic headings, these notes explain every concept from your lecture in full textbook depth and clearly distinguish **Core Lecture Concepts (From Uploaded Lecture)** from **Supplementary Academic Context & Textbook Expansion** with verified reference links.\n\n` +
     `---\n\n` +
     slideSections.join("\n\n---\n\n")
   );
@@ -782,8 +818,54 @@ function buildDeterministicQuestionFromSlide(
 
   let effectiveType = questionType;
   if (questionType === "mixed" || questionType === "exhaustive") {
-    const cycle = ["mcq", "assertion_reasoning", "application", "true_false", "fill_in_the_blank", "matching", "mcq"];
+    const cycle = [
+      "mcq",
+      "multiple_select",
+      "assertion_reasoning",
+      "application",
+      "true_false",
+      "fill_in_the_blank",
+      "matching",
+      "short_answer",
+    ];
     effectiveType = cycle[(qIndex - 1) % cycle.length];
+  }
+
+  if (effectiveType === "multiple_select") {
+    const trueStmt1 = primaryFact;
+    const trueStmt2 =
+      secondaryFact !== primaryFact
+        ? secondaryFact
+        : `${conceptFocus} plays an essential functional role within ${slide.title}.`;
+    const falseStmt1 = invertFactToPlausibleMisconception(primaryFact, slide.title, qIndex);
+    const falseStmt2 = invertFactToPlausibleMisconception(secondaryFact, slide.title, qIndex + 2);
+    const statementsBlock =
+      `  I. ${trueStmt1}\n` +
+      `  II. ${falseStmt1}\n` +
+      `  III. ${trueStmt2}\n` +
+      `  IV. ${falseStmt2}`;
+    const letters = ["A", "B", "C", "D"];
+    const targetIdx = (qIndex - 1) % 4;
+    const correctCombo = "I and III only";
+    const wrongCombos = ["I, II, and III only", "II and IV only", "I, III, and IV only"];
+    const opts: string[] = [];
+    let wIdx = 0;
+    for (let i = 0; i < 4; i++) {
+      opts.push(`${letters[i]}. ${i === targetIdx ? correctCombo : wrongCombos[wIdx++]}`);
+    }
+    return {
+      id: qIndex,
+      question: `Select the option that identifies ALL correct statements regarding ${conceptFocus} in ${slide.title}:\n${statementsBlock}`,
+      type: "multiple_select",
+      options: opts,
+      correctAnswer: letters[targetIdx],
+      explanation: `Statements I and III are accurate regarding ${slide.title} (${trueStmt1} ${trueStmt2}), whereas Statements II and IV invert the governing mechanism.`,
+      misconception: "Verify each Roman-numeral statement independently against the mechanism before choosing the combination.",
+      testedFact: primaryFact,
+      topic: slide.title,
+      difficulty: "intermediate",
+      sourceRef: "",
+    };
   }
 
   if (effectiveType === "true_false") {
@@ -1090,7 +1172,7 @@ export async function generateSummaryWithAI(
     38000
   );
   if (pyData?.summary && String(pyData.summary).trim().length > 40) {
-    return convertBulletsToFlowingProse(String(pyData.summary));
+    return sanitizeSummaryOutput(String(pyData.summary), mainTopic);
   }
 
   const mainTopicWebBrief = await fetchWikipediaSummaryForTopic(mainTopic);
@@ -1098,20 +1180,21 @@ export async function generateSummaryWithAI(
   const systemPrompt = `You are LAMLA Guide AI's Chief Educational Synthesizer and Revision Architect.
 Slogan: "It's Never Too Late To Study."
 Target Audience: ${educationalLevel}. Requested Style: ${style}.
-CRITICAL RULES:
-1. WRITE IN FULL, FLOWING SENTENCES AND COHESIVE PARAGRAPHS — DO NOT USE BULLET POINTS (-, *, •)!
-2. A summary must read like a true executive and textbook synthesis written in connected sentences and well-structured paragraphs that explain how all concepts in the lecture fit together from beginning to end.
-3. Ignore introductory cover slides about the school, university, department, course code, lecturer name, or table of contents. Focus 100% on the MAIN ACADEMIC TOPIC (${mainTopic}).
-4. Leave generous blank lines (\\n\\n) between paragraphs and section headings so the prose summary is clean, airy, and easy to scroll through rapidly.`;
+STRICT ACADEMIC SUMMARY RULES:
+1. Explain the actual academic concepts in clear, meaningful paragraphs under meaningful academic headings and subheadings.
+2. Use bullet points where they genuinely improve readability (e.g., key steps in a mechanism, classifications, or key comparisons).
+3. NEVER present the main summary as a table (do NOT output Markdown tables | ... |).
+4. NEVER create headings such as "Slide 1 Summary", "Slide 2 Summary", or include [Slide X] markers.
+5. Ignore introductory cover slides about the school, university, department, course code, or lecturer name. Focus 100% on the MAIN ACADEMIC TOPIC (${mainTopic}).`;
 
   try {
-    const cleanedMaterial = slides.map((s) => s.full).join("\n\n") || content;
+    const cleanedMaterial = slides.map((s) => `### Topic: ${s.title}\n${s.body}`).join("\n\n") || content;
     const webAddendum = mainTopicWebBrief ? `\n\nExternal Academic Reference:\n${mainTopicWebBrief}` : "";
     const aiOut = await callGemini(
-      `Write a comprehensive, well-spaced Master Summary of EVERYTHING on the main topic (${mainTopic}) in full, flowing sentences and cohesive prose paragraphs (do NOT use bullet points):\n\n${cleanedMaterial.slice(0, 35000)}${webAddendum}`,
+      `Write a comprehensive Academic Summary on (${mainTopic}) organized under meaningful academic headings and subheadings (NEVER use a table and NEVER use Slide 1/2/3 headings):\n\n${cleanedMaterial.slice(0, 35000)}${webAddendum}`,
       { systemPrompt, temperature: 0.3 }
     );
-    return convertBulletsToFlowingProse(aiOut);
+    return sanitizeSummaryOutput(aiOut, mainTopic);
   } catch {
     return buildDeterministicSummary(content, mainTopicWebBrief);
   }
@@ -1270,10 +1353,9 @@ export async function generateStudyNotesWithAI(
 Target Level: ${educationalLevel}. Subject: ${mainTopic}.
 CRITICAL INSTRUCTIONS:
 1. Ignore cover/intro slides about the school, university, faculty, department, course code, or lecturer. Focus strictly on the MAIN ACADEMIC TOPIC (${mainTopic}).
-2. Move systematically from one substantive slide to the next (## Slide X — <Topic Title> [Source: Slide X]). Never skip a slide.
-3. Explain EVERY SINGLE CONCEPT, bullet point, term, and formula on each slide in VERY DEEP DETAIL under its own sub-heading (#### 🔹 <Concept Name>), covering its definition, step-by-step mechanism (how & why it works), classifications, comparisons, and real-world/clinical application.
-4. Leave generous blank lines and open spacing between every paragraph, subheading, and bullet point so the notes never look clustered.
-5. Use the provided Internet Research and broader textbook knowledge to thoroughly explain concepts that were only briefly listed or left unexplained on the slides.`;
+2. NEVER organize headings as "Slide 1", "Slide 2", "Slide 3". Organize under meaningful academic topic headings (## 1. <Topic Title>, ## 2. <Topic Title>).
+3. Explain every single concept, term, mechanism, and formula in deep textbook detail, clearly distinguishing Core Lecture Concepts from Supplementary Academic Context & Textbook Expansion with verified reference links.
+4. Leave generous blank lines and open spacing between paragraphs, subheadings, and bullet points.`;
 
   try {
     const batchSize = 4;
@@ -1287,33 +1369,39 @@ CRITICAL INSTRUCTIONS:
     }
 
     const renderedBatches = await Promise.all(
-      batches.slice(0, 6).map(async (batchSlides) => {
-        const slideLabels = batchSlides.map((s) => s.label).join(", ");
+      batches.slice(0, 6).map(async (batchSlides, batchIdx) => {
+        const baseSectionNum = batchIdx * batchSize;
+        const topicLabels = batchSlides.map((s) => s.title).join(", ");
         const batchMaterial = batchSlides
-          .map((s) => {
+          .map((s, idx) => {
             const webExtra = webNotesMap[s.num]
-              ? `\n[Internet & Textbook Reference for ${s.label} (${s.title}): ${webNotesMap[s.num]}]`
+              ? `\n[Supplementary Reference for ${s.title}: ${webNotesMap[s.num]}]`
               : "";
-            return `${s.full}${webExtra}`;
+            return `Topic ${baseSectionNum + idx + 1}: ${s.title}\n${s.body}${webExtra}`;
           })
           .join("\n\n");
 
         try {
           let batchOut = await callGemini(
-            `Write ULTRA-DETAILED, openly spaced, slide-by-slide Study Notes for (${slideLabels}) on ${mainTopic}. Unpack and thoroughly explain EVERY SINGLE concept and bullet point on each slide, and use the internet/textbook reference to explain any brief or unexplained concepts:\n\n${batchMaterial}`,
+            `Write authoritative, textbook-grade Detailed Study Notes for topics (${topicLabels}) on ${mainTopic}. Use ## <Number>. <Topic Title> headings (never use "Slide 1" headings), explain every concept in depth, and include Supplementary Academic Context with reference links:\n\n${batchMaterial}`,
             { systemPrompt, temperature: 0.25 }
           );
-          for (let idx = 0; idx < batchSlides.length; idx++) {
-            const sl = batchSlides[idx];
-            const regex = new RegExp(`\\b(?:Slide|Page)\\s*${sl.num}\\b`, "i");
-            if (!regex.test(batchOut)) {
-              batchOut += `\n\n---\n\n${buildDetailedSlideSection(sl, mainTopic, batchSlides[idx + 1], webNotesMap[sl.num])}`;
-            }
-          }
+          batchOut = batchOut.replace(
+            /^(#{1,6}\s*)(?:Slide|Page)\s*(\d+)\s*[:\-—]?\s*/gim,
+            "$1$2. "
+          );
           return batchOut;
         } catch {
           return batchSlides
-            .map((sl, idx) => buildDetailedSlideSection(sl, mainTopic, batchSlides[idx + 1], webNotesMap[sl.num]))
+            .map((sl, idx) =>
+              buildDetailedSlideSection(
+                sl,
+                baseSectionNum + idx + 1,
+                mainTopic,
+                batchSlides[idx + 1],
+                webNotesMap[sl.num]
+              )
+            )
             .join("\n\n---\n\n");
         }
       })
@@ -1324,15 +1412,21 @@ CRITICAL INSTRUCTIONS:
       renderedBatches.push(
         remainingSlides
           .map((sl, idx) =>
-            buildDetailedSlideSection(sl, mainTopic, remainingSlides[idx + 1], webNotesMap[sl.num])
+            buildDetailedSlideSection(
+              sl,
+              24 + idx + 1,
+              mainTopic,
+              remainingSlides[idx + 1],
+              webNotesMap[sl.num]
+            )
           )
           .join("\n\n---\n\n")
       );
     }
 
     const header =
-      `# 📚 DETAILED SLIDE-BY-SLIDE STUDY NOTES: ${mainTopic.toUpperCase()}\n\n` +
-      `> **Comprehensive Concept-by-Concept Study Guide:** Each slide below is unpacked in sequence with generous spacing, deep explanations of every concept on the slide, and internet/textbook expansions for concepts briefly mentioned on the slides.\n\n---\n\n`;
+      `# ${mainTopic} — Comprehensive University Study Notes\n\n` +
+      `> **Authoritative Academic Study Guide:** Organized under meaningful academic topic headings, these notes explain every concept from your lecture in full textbook depth and clearly distinguish **Core Lecture Concepts (From Uploaded Lecture)** from **Supplementary Academic Context & Textbook Expansion** with verified reference links.\n\n---\n\n`;
 
     return header + renderedBatches.join("\n\n---\n\n");
   } catch {

@@ -407,24 +407,31 @@ export async function POST(req: NextRequest) {
         const pyRes = await callPythonAI("/api/curate-videos", "POST", {
           title: docTitle,
           content: docText,
-        }, 5000, token || undefined, userId);
-        if (pyRes?.videos && pyRes.videos.length > 0) {
-          const mappedVideos = pyRes.videos.map((v: any) => ({
+        }, 12000, token || undefined, userId);
+        if (pyRes && (Array.isArray(pyRes.videos) || Array.isArray(pyRes.searchShortcuts) || Array.isArray(pyRes.search_shortcuts))) {
+          const mappedVideos = (pyRes.videos || []).map((v: any) => ({
             id: v.id,
             title: v.title,
-            channelTitle: v.channel_title,
-            thumbnailUrl: v.thumbnail_url,
-            youtubeUrl: v.youtube_url,
-            embedUrl: v.embed_url,
+            channelTitle: v.channel_title || v.channelTitle,
+            thumbnailUrl: v.thumbnail_url || v.thumbnailUrl,
+            youtubeUrl: v.youtube_url || v.youtubeUrl,
+            embedUrl: v.embed_url || v.embedUrl,
             topic: v.topic,
-            relevanceReason: v.relevance_reason,
-            verified: true,
+            relevantLectureTopic: v.relevant_lecture_topic || v.relevantLectureTopic || v.topic,
+            whatYouWillLearn: v.what_you_will_learn || v.whatYouWillLearn || v.relevance_reason,
+            relevanceReason: v.relevance_reason || v.relevanceReason || v.what_you_will_learn,
+            verified: Boolean(v.verified),
           }));
           return NextResponse.json({
             success: true,
-            mainTopic: pyRes.main_topic,
+            mainTopic: pyRes.mainTopic || pyRes.main_topic || docTitle,
+            subtopics: pyRes.subtopics || [],
+            visualConcepts: pyRes.visual_concepts || pyRes.visualConcepts || [],
+            verificationStatus: pyRes.verification_status || pyRes.verificationStatus || (mappedVideos.length > 0 ? "verified" : "unverified_or_offline"),
+            statusMessage: pyRes.status_message || pyRes.statusMessage || "",
             videos: mappedVideos,
-            handled_by: "python-video-curator"
+            searchShortcuts: pyRes.searchShortcuts || pyRes.search_shortcuts || [],
+            handled_by: "python-video-curator",
           });
         }
       } catch (e) {
@@ -435,9 +442,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         mainTopic: res.mainTopic,
+        subtopics: res.subtopics || [],
+        visualConcepts: res.visualConcepts || [],
+        verificationStatus: res.verificationStatus,
+        statusMessage: res.statusMessage,
         videos: res.videos,
         searchShortcuts: res.searchShortcuts,
-        handled_by: "nextjs-oembed-curator"
+        handled_by: "nextjs-oembed-curator",
       });
     }
 

@@ -576,7 +576,7 @@ def curate_videos(
 ):
     try:
         from python_ai.video_curator import curate_videos_for_text
-        res = curate_videos_for_text(req.title, req.content)
+        res = curate_videos_for_text(req.title, req.content, user_id=user["id"])
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
