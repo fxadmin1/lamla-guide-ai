@@ -1,13 +1,13 @@
 /**
- * LAMLA Guide AI — Ultra-Fast Zero-RAM Client-Side Document & Slide Extractor
+ * LAMLA Guide AI — Complete Academic Client-Side Document & Slide Extractor
  * "It's Never Too Late To Study."
  *
- * Allows students on mobile phones or laptops to upload files up to 1.5 GB+
- * (.pptx, .docx, .txt, .md, and large .pdf files) in under 0.5 seconds:
- * - Reads only the ZIP Central Directory & XML slide entries for .pptx / .docx
- *   using File.slice() + native DecompressionStream("deflate-raw"), skipping
- *   hundreds of megabytes of embedded video/audio/image bloat!
- * - Falls back seamlessly to server streaming for scanned PDFs or images.
+ * Extracts every slide/section from beginning to end (.pptx, .docx, .txt, .md):
+ * - Preserves slide numbers, titles, paragraphs, tables (<a:tbl> / <w:tbl>),
+ *   SmartArt diagrams (ppt/diagrams/data*.xml), charts (ppt/charts/chart*.xml),
+ *   and lecturer speaker notes (ppt/notesSlides/notesSlide*.xml).
+ * - Automatically hands off image-heavy / scanned presentations to the server
+ *   Vision OCR pipeline so visual slides are never silently ignored.
  */
 
 export interface ClientExtractionResult {
@@ -64,20 +64,15 @@ interface ZipEntryMeta {
   localHeaderOffset: number;
 }
 
-/**
- * Reads the ZIP Central Directory from the end of a File (using File.slice so even a 1.5 GB file
- * uses < 512 KB of RAM) and returns metadata for matching XML entries.
- */
 async function readZipXmlEntries(
   file: File,
   filterFn: (name: string) => boolean
 ): Promise<Map<string, string>> {
-  const tailSize = Math.min(file.size, 512 * 1024); // Last 512 KB
+  const tailSize = Math.min(file.size, 512 * 1024);
   const tailOffset = file.size - tailSize;
   const tailBuf = new Uint8Array(await file.slice(tailOffset, file.size).arrayBuffer());
   const tailView = new DataView(tailBuf.buffer, tailBuf.byteOffset, tailBuf.byteLength);
 
-  // Locate End of Central Directory (EOCD) signature: 0x06054b50
   let eocdPos = -1;
   for (let i = tailBuf.length - 22; i >= 0; i--) {
     if (tailView.getUint32(i, true) === 0x06054b50) {
@@ -112,7 +107,7 @@ async function readZipXmlEntries(
     const localHeaderOffset = cdView.getUint32(pos + 42, true);
 
     const name = decoder.decode(cdBuf.subarray(pos + 46, pos + 46 + nameLen));
-    if (filterFn(name) && uncompressedSize < 25 * 1024 * 1024) {
+    if (filterFn(name) && uncompressedSize < 25 * 1024 * 1024 && compressedSize > 0) {
       entries.push({
         name,
         compressionMethod,
@@ -126,6 +121,7 @@ async function readZipXmlEntries(
 
   const results = new Map<string, string>();
   for (const entry of entries) {
+    if (entry.localHeaderOffset + 30 > file.size) continue;
     const headerSlice = new Uint8Array(
       await file.slice(entry.localHeaderOffset, entry.localHeaderOffset + 30).arrayBuffer()
     );
@@ -134,6 +130,8 @@ async function readZipXmlEntries(
     const localNameLen = hv.getUint16(26, true);
     const localExtraLen = hv.getUint16(28, true);
     const dataStart = entry.localHeaderOffset + 30 + localNameLen + localExtraLen;
+    if (dataStart + entry.compressedSize > file.size) continue;
+
     const rawSlice = new Uint8Array(
       await file.slice(dataStart, dataStart + entry.compressedSize).arrayBuffer()
     );
@@ -154,9 +152,48 @@ async function readZipXmlEntries(
 
 function extractParagraphsFromDrawingMl(xml: string): string[] {
   const paras: string[] = [];
+
+  // Extract tables (<a:tbl>) as structured Markdown tables first
+  const tblRegex = /<a:tbl\b[^>]*>([\s\S]*?)<\/a:tbl>/g;
+  let tblMatch: RegExpExecArray | null;
+  const tableBlocks: string[] = [];
+  while ((tblMatch = tblRegex.exec(xml)) !== null) {
+    const tblXml = tblMatch[1];
+    const rowRegex = /<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/g;
+    let rMatch: RegExpExecArray | null;
+    const rows: string[] = [];
+    let rIdx = 0;
+    while ((rMatch = rowRegex.exec(tblXml)) !== null) {
+      const cellRegex = /<a:tc\b[^>]*>([\s\S]*?)<\/a:tc>/g;
+      let cMatch: RegExpExecArray | null;
+      const cells: string[] = [];
+      while ((cMatch = cellRegex.exec(rMatch[1])) !== null) {
+        const cellTexts: string[] = [];
+        const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g;
+        let tMatch: RegExpExecArray | null;
+        while ((tMatch = tRegex.exec(cMatch[1])) !== null) {
+          cellTexts.push(decodeXmlEntities(tMatch[1]).trim());
+        }
+        cells.push(cellTexts.filter(Boolean).join(" ") || "-");
+      }
+      if (cells.some((c) => c !== "-")) {
+        rows.push(`| ${cells.join(" | ")} |`);
+        if (rIdx === 0) {
+          rows.push(`| ${cells.map(() => "---").join(" | ")} |`);
+        }
+        rIdx++;
+      }
+    }
+    if (rows.length > 0) {
+      tableBlocks.push(`[Table Data]:\n${rows.join("\n")}`);
+    }
+  }
+
+  // Strip tables before extracting regular paragraphs so table cells aren't duplicated
+  const xmlWithoutTables = xml.replace(/<a:tbl\b[^>]*>[\s\S]*?<\/a:tbl>/g, "");
   const pRegex = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/g;
   let pMatch: RegExpExecArray | null;
-  while ((pMatch = pRegex.exec(xml)) !== null) {
+  while ((pMatch = pRegex.exec(xmlWithoutTables)) !== null) {
     const pBody = pMatch[1];
     const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g;
     const parts: string[] = [];
@@ -167,7 +204,8 @@ function extractParagraphsFromDrawingMl(xml: string): string[] {
     const line = parts.join("").trim();
     if (line) paras.push(line);
   }
-  return paras;
+
+  return [...paras, ...tableBlocks];
 }
 
 async function extractPptxOnClient(file: File): Promise<ClientExtractionResult> {
@@ -175,7 +213,9 @@ async function extractPptxOnClient(file: File): Promise<ClientExtractionResult> 
     file,
     (name) =>
       /^ppt\/slides\/slide\d+\.xml$/i.test(name) ||
-      /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(name)
+      /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(name) ||
+      /^ppt\/diagrams\/data\d+\.xml$/i.test(name) ||
+      /^ppt\/charts\/chart\d+\.xml$/i.test(name)
   );
 
   const slideNums = Array.from(xmlMap.keys())
@@ -191,19 +231,50 @@ async function extractPptxOnClient(file: File): Promise<ClientExtractionResult> 
   }
 
   const formattedSlides: string[] = [];
+  const lowTextSlides: number[] = [];
+
   for (const num of slideNums) {
     const slideXml = xmlMap.get(`ppt/slides/slide${num}.xml`) || "";
     const notesXml = xmlMap.get(`ppt/notesSlides/notesSlide${num}.xml`) || "";
+    const diagXml = xmlMap.get(`ppt/diagrams/data${num}.xml`) || "";
+    const chartXml = xmlMap.get(`ppt/charts/chart${num}.xml`) || "";
+
     const lines = extractParagraphsFromDrawingMl(slideXml);
     const notesLines = notesXml ? extractParagraphsFromDrawingMl(notesXml) : [];
+    const diagLines = diagXml ? extractParagraphsFromDrawingMl(diagXml) : [];
+    const chartLines = chartXml ? extractParagraphsFromDrawingMl(chartXml) : [];
 
     const title = lines[0] || `Slide ${num}`;
-    const body = lines.slice(1).join("\n");
+    const bodyParts = lines.slice(1);
+    if (diagLines.length > 0) {
+      bodyParts.push(`[Diagram / Process Flow]: ${diagLines.join(" -> ")}`);
+    }
+    if (chartLines.length > 0) {
+      bodyParts.push(`[Chart / Data]: ${chartLines.join(" | ")}`);
+    }
+
+    const body = bodyParts.join("\n").trim();
+    const totalChars = (title === `Slide ${num}` ? 0 : title.length) + body.length + notesLines.join(" ").length;
+    if (totalChars < 12) {
+      lowTextSlides.push(num);
+    }
+
     let block = `--- Slide ${num}: ${title} ---\n${body || title}`;
     if (notesLines.length > 0) {
       block += `\n[Lecturer Note: ${notesLines.join(" ")}]`;
     }
     formattedSlides.push(block);
+  }
+
+  // If >35% of slides have almost no text, the deck is likely image-based/scanned — let the server Vision OCR process it!
+  if (lowTextSlides.length > slideNums.length * 0.35 && file.size < 80 * 1024 * 1024) {
+    throw new Error("Image-heavy presentation detected; routing to server Vision OCR.");
+  }
+
+  if (lowTextSlides.length > 0) {
+    formattedSlides.push(
+      `[Extraction Honesty Notice: Slide(s) ${lowTextSlides.join(", ")} contained primarily graphical or non-text elements with minimal selectable text.]`
+    );
   }
 
   return {
@@ -239,7 +310,6 @@ async function extractDocxOnClient(file: File): Promise<ClientExtractionResult> 
     throw new Error("No readable paragraphs in DOCX.");
   }
 
-  // Group into logical slide sections (~10 paragraphs per section)
   const sections: string[] = [];
   const step = 10;
   let slideIdx = 1;
@@ -257,10 +327,6 @@ async function extractDocxOnClient(file: File): Promise<ClientExtractionResult> 
   };
 }
 
-/**
- *Attempts ultra-fast local extraction on the user's phone/laptop so even 1 GB+
- * PowerPoint/Word/Text files extract in < 0.5 seconds without uploading 1 GB over mobile data.
- */
 export async function tryFastClientExtraction(file: File): Promise<ClientExtractionResult | null> {
   const name = file.name.toLowerCase();
   try {

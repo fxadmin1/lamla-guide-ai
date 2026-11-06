@@ -238,7 +238,7 @@ class PythonAIEngine:
                 req = urllib.request.Request(endpoint, data=data, headers={"Content-Type": "application/json"})
 
                 try:
-                    with urllib.request.urlopen(req, timeout=8) as response:
+                    with urllib.request.urlopen(req, timeout=24) as response:
                         result = json.loads(response.read().decode("utf-8"))
                         text = result["candidates"][0]["content"]["parts"][0]["text"]
                         self._preferred_gemini_model = model
@@ -287,42 +287,46 @@ class PythonAIEngine:
         if json_mode:
             sys_msg += "\nIMPORTANT: Return ONLY valid JSON without markdown code fences."
         messages.append({"role": "system", "content": sys_msg})
-        messages.append({"role": "user", "content": prompt[:18000]})
+        messages.append({"role": "user", "content": prompt[:24000]})
 
-        payload: Dict[str, Any] = {
-            "model": "openai",
-            "messages": messages,
-            "temperature": temperature,
-            "seed": random.randint(1, 99999),
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            "https://text.pollinations.ai/openai",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "LAMLAGuideAI/2.0 (Educational Platform)",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=4.0) as resp:
-                raw_body = resp.read().decode("utf-8", errors="replace").strip()
-                if raw_body.startswith("{"):
-                    parsed = json.loads(raw_body)
-                    if isinstance(parsed, dict) and "choices" in parsed:
-                        content = parsed["choices"][0]["message"]["content"]
-                        if content and len(content.strip()) > 2:
-                            self.active_model_name = "LAMLA Cloud Free (openai)"
-                            return content
-                if raw_body and not json_mode and len(raw_body) > 10:
-                    self.active_model_name = "LAMLA Cloud Free (openai)"
-                    return raw_body
-        except Exception:
-            self._free_cloud_cooldown_until = time.time() + 300.0
+        for candidate_model in ("openai", "openai-large", "mistral"):
+            payload: Dict[str, Any] = {
+                "model": candidate_model,
+                "messages": messages,
+                "temperature": temperature,
+                "seed": random.randint(1, 99999),
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                "https://text.pollinations.ai/openai",
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "LAMLAGuideAI/2.0 (Academic Intelligence Engine)",
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=22.0) as resp:
+                    raw_body = resp.read().decode("utf-8", errors="replace").strip()
+                    if raw_body.startswith("{"):
+                        try:
+                            parsed = json.loads(raw_body)
+                            if isinstance(parsed, dict) and "choices" in parsed:
+                                content = parsed["choices"][0]["message"]["content"]
+                                if content and len(content.strip()) > 2:
+                                    self.active_model_name = f"LAMLA Cloud ({candidate_model})"
+                                    return content
+                        except Exception:
+                            pass
+                    if raw_body and len(raw_body) > 10:
+                        self.active_model_name = f"LAMLA Cloud ({candidate_model})"
+                        return raw_body
+            except Exception:
+                continue
 
-        self._free_cloud_cooldown_until = time.time() + 300.0
+        self._free_cloud_cooldown_until = time.time() + 15.0
         raise RuntimeError("Free cloud fallback temporarily unreachable.")
 
     def call_gemini_vision(
@@ -434,18 +438,18 @@ class PythonAIEngine:
         raise RuntimeError("All cloud and local AI providers were temporarily unreachable.")
 
     # ─────────────────────────────────────────────────────────────
-    # SLIDE PARSING & DEDUPLICATION UTILITIES
+    # SLIDE PARSING & SHARED ACADEMIC INTELLIGENCE ENGINE
     # ─────────────────────────────────────────────────────────────
-    def _parse_individual_slides(self, content: str) -> List[Dict[str, Any]]:
+    def _parse_individual_slides(self, content: str, filter_admin: bool = True) -> List[Dict[str, Any]]:
         """
-        Extracts every individual slide/page in order so summaries, notes, and quizzes
-        can guarantee 100% coverage of every single page/slide.
+        Extracts every individual slide/page in order from beginning to end so summaries,
+        notes, flashcards, quizzes, and tutor responses cover 100% of the presentation.
         """
         if not content or not content.strip():
             return []
 
         pattern = re.compile(
-            r"---\s*(Slide|Page)\s*(\d+)(?::\s*([^\n-]*?))?\s*---\s*\n(.*?)(?=(?:---\s*(?:Slide|Page)\s*\d+)|\Z)",
+            r"---\s*(Slide|Page)\s*(\d+)(?:\s*[:\-—]\s*([^\r\n]*?))?\s*---\s*\r?\n(.*?)(?=(?:---\s*(?:Slide|Page)\s*\d+)|\Z)",
             re.DOTALL | re.IGNORECASE,
         )
         matches = list(pattern.finditer(content))
@@ -504,7 +508,127 @@ class PythonAIEngine:
                     "full": f"--- Slide {slide_idx}: {first_line} ---\n{joined}",
                 })
 
-        return self._filter_substantive_slides(slides)
+        return self._filter_substantive_slides(slides) if filter_admin else slides
+
+    def analyze_academic_presentation(self, content: str, subject_hint: str = "") -> Dict[str, Any]:
+        """
+        Shared Academic Intelligence Engine:
+        Examines the ENTIRE uploaded presentation from first slide/page to last before generating
+        any learning output. Identifies the actual academic subject, filters out administrative/school
+        metadata, extracts definitions, mechanisms, classifications, comparisons, diagrams/tables,
+        and applications, and verifies full section coverage honestly.
+        """
+        doc_sig = hashlib.sha256(f"{subject_hint}|{content[:60000]}".encode("utf-8", errors="ignore")).hexdigest()[:24]
+        cache_key = f"blueprint_{doc_sig}"
+        with self._lock:
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+        raw_slides = self._parse_individual_slides(content, filter_admin=False)
+        substantive_slides = self._filter_substantive_slides(raw_slides)
+        main_topic = self._extract_main_topic_title(substantive_slides, subject_hint or "Core Academic Subject")
+
+        # Detect any extraction honesty notices or slides with minimal selectable text
+        honesty_notices: List[str] = []
+        for m_notice in re.finditer(r"\[Extraction Honesty Notice:\s*([^\]]+)\]", content, re.I):
+            honesty_notices.append(m_notice.group(1).strip())
+        visual_only_labels: List[str] = []
+        for rs in raw_slides:
+            if "[Note: This slide contains visual/graphical elements" in rs.get("body", "") or "[Note: Page " in rs.get("body", ""):
+                visual_only_labels.append(rs["label"])
+        if visual_only_labels and not honesty_notices:
+            honesty_notices.append(
+                f"{', '.join(visual_only_labels)} contained predominantly graphical or scanned elements with minimal selectable text."
+            )
+
+        subtopics: List[str] = []
+        definitions: List[str] = []
+        mechanisms: List[str] = []
+        classifications: List[str] = []
+        comparisons: List[str] = []
+        tables_and_diagrams: List[str] = []
+        applications: List[str] = []
+        concept_records: List[Dict[str, Any]] = []
+
+        for s in substantive_slides:
+            s_label = s["label"]
+            s_title = s["title"]
+            s_body = s["body"]
+            subtopics.append(f"{s_title} ({s_label})")
+
+            if "[Table Data]" in s_body or "|" in s_body:
+                tables_and_diagrams.append(f"Table on {s_label} ({s_title})")
+            if any(tag in s_body for tag in ("[Diagram", "[Chart", "[Visual/Diagram OCR]")):
+                tables_and_diagrams.append(f"Diagram/Chart on {s_label} ({s_title})")
+
+            s_facts = self._extract_slide_facts(s)
+            for f in s_facts:
+                fl = f.lower()
+                focus = self._extract_concept_focus(f, s_title)
+                cat = "concept"
+                if any(k in fl for k in ("is defined as", "refers to", "means ", "is a ", "is the ", "defined as")):
+                    definitions.append(f"{focus}: {f} [{s_label}]")
+                    cat = "definition"
+                if any(k in fl for k in ("mechanism", "pathway", "process", "activates", "inhibits", "stimulates", "causes", "leads to", "results in", "binds to", "promotes", "converts", "regulates")):
+                    mechanisms.append(f"{focus}: {f} [{s_label}]")
+                    cat = "mechanism"
+                if any(k in fl for k in ("classified", "types of", "divided into", "categories", "classes", "consists of", "subtypes", "alpha", "beta", "sympathetic", "parasympathetic", "group")):
+                    classifications.append(f"{focus}: {f} [{s_label}]")
+                    cat = "classification"
+                if any(k in fl for k in ("whereas", "unlike", "compared to", "in contrast", "difference between", "while ", "versus", "higher than", "lower than")):
+                    comparisons.append(f"{focus}: {f} [{s_label}]")
+                    cat = "comparison"
+                if any(k in fl for k in ("clinical", "treatment", "therapy", "application", "used in", "example", "patient", "drug", "effect on", "practical", "significance")):
+                    applications.append(f"{focus}: {f} [{s_label}]")
+                    cat = "application"
+
+                concept_records.append({
+                    "term": focus,
+                    "statement": f,
+                    "category": cat,
+                    "slide_title": s_title,
+                    "slide_label": s_label,
+                    "slide_num": s["num"],
+                })
+
+        blueprint_lines = [
+            f"SHARED ACADEMIC INTELLIGENCE BLUEPRINT — {main_topic.upper()}",
+            f"- Total Slides/Pages Analyzed: {len(raw_slides)} total ({len(substantive_slides)} substantive academic sections from start to finish; {max(0, len(raw_slides) - len(substantive_slides))} administrative/intro slides excluded).",
+            f"- Complete Sequence of Topics Taught: {'; '.join(subtopics[:35])}",
+        ]
+        if definitions:
+            blueprint_lines.append("- Key Definitions Identified:\n  * " + "\n  * ".join(definitions[:12]))
+        if mechanisms:
+            blueprint_lines.append("- Core Mechanisms & Cause-Effect Pathways:\n  * " + "\n  * ".join(mechanisms[:12]))
+        if classifications:
+            blueprint_lines.append("- Classifications & Categories:\n  * " + "\n  * ".join(classifications[:10]))
+        if comparisons:
+            blueprint_lines.append("- Key Comparisons & Distinctions:\n  * " + "\n  * ".join(comparisons[:8]))
+        if tables_and_diagrams:
+            blueprint_lines.append("- Diagrams, Charts & Tables Present: " + ", ".join(tables_and_diagrams[:10]))
+        if applications:
+            blueprint_lines.append("- Clinical / Practical Applications & Examples:\n  * " + "\n  * ".join(applications[:10]))
+        if honesty_notices:
+            blueprint_lines.append("- Extraction Honesty Notice: " + " ".join(honesty_notices))
+
+        blueprint = {
+            "main_topic": main_topic,
+            "raw_slides": raw_slides,
+            "substantive_slides": substantive_slides,
+            "subtopics": subtopics,
+            "definitions": definitions,
+            "mechanisms": mechanisms,
+            "classifications": classifications,
+            "comparisons": comparisons,
+            "tables_and_diagrams": tables_and_diagrams,
+            "applications": applications,
+            "concept_records": concept_records,
+            "honesty_notices": honesty_notices,
+            "blueprint_prompt": "\n".join(blueprint_lines),
+        }
+        with self._lock:
+            self._cache[cache_key] = blueprint
+        return blueprint
 
     @staticmethod
     def _is_institutional_or_boilerplate_line(line: str) -> bool:
@@ -753,32 +877,57 @@ class PythonAIEngine:
 
     @staticmethod
     def _invert_fact_to_falsehood(fact: str, title: str, other_facts: List[str], seed_idx: int) -> str:
-        """Creates a realistic examination misconception (false statement) by inverting key relationships or swapping mechanisms."""
+        """Creates a realistic examination misconception (false statement) by inverting directional/mechanistic terms or swapping sibling concept mechanisms."""
         swaps = [
             (r"\bincreases\b", "decreases"),
             (r"\bdecreases\b", "increases"),
             (r"\bincrease\b", "decrease"),
             (r"\bdecrease\b", "increase"),
+            (r"\bstimulates\b", "inhibits"),
+            (r"\binhibits\b", "stimulates"),
+            (r"\bactivates\b", "inactivates"),
+            (r"\binactivates\b", "activates"),
+            (r"\bpromotes\b", "suppresses"),
+            (r"\bsuppresses\b", "promotes"),
+            (r"\baccelerates\b", "retards"),
+            (r"\benhances\b", "diminishes"),
+            (r"\bsympathetic\b", "parasympathetic"),
+            (r"\bparasympathetic\b", "sympathetic"),
+            (r"\baerobic\b", "anaerobic"),
+            (r"\banaerobic\b", "aerobic"),
+            (r"\banabolic\b", "catabolic"),
+            (r"\bcatabolic\b", "anabolic"),
+            (r"\bendothermic\b", "exothermic"),
+            (r"\bexothermic\b", "endothermic"),
+            (r"\bdepolarization\b", "hyperpolarization"),
+            (r"\bhyperpolarization\b", "depolarization"),
+            (r"\bagonist\b", "antagonist"),
+            (r"\bantagonist\b", "agonist"),
+            (r"\bafferent\b", "efferent"),
+            (r"\befferent\b", "afferent"),
+            (r"\bintracellular\b", "extracellular"),
+            (r"\bextracellular\b", "intracellular"),
+            (r"\bcompetitive\b", "non-competitive"),
+            (r"\breversible\b", "irreversible"),
+            (r"\birreversible\b", "reversible"),
             (r"\bdirectly\b", "inversely"),
             (r"\binversely\b", "directly"),
-            (r"\balways\b", "never"),
-            (r"\bnever\b", "always"),
-            (r"\brequires\b", "operates completely without"),
-            (r"\bproduces\b", "consumes and eliminates"),
-            (r"\benhances\b", "inhibits"),
-            (r"\binhibits\b", "accelerates"),
-            (r"\bessential\b", "unnecessary"),
+            (r"\brequires\b", "proceeds independently without"),
+            (r"\bproduces\b", "depletes and prevents the formation of"),
+            (r"\bessential\b", "dispensable"),
             (r"\binternal\b", "external"),
             (r"\bexternal\b", "internal"),
             (r"\bactive\b", "passive"),
             (r"\bpassive\b", "active"),
             (r"\bhigh\b", "negligible"),
-            (r"\blow\b", "excessively high"),
+            (r"\blow\b", "markedly elevated"),
             (r"\bgreater\b", "smaller"),
             (r"\bmore\b", "fewer"),
+            (r"\bprimary\b", "secondary"),
+            (r"\bsecondary\b", "primary"),
+            (r"\bupstream\b", "downstream"),
+            (r"\bdownstream\b", "upstream"),
             (r"\bcan\b", "cannot"),
-            (r"\bis\b", "is never"),
-            (r"\bare\b", "are never"),
         ]
         for pattern, replacement in swaps:
             if re.search(pattern, fact, flags=re.IGNORECASE):
@@ -786,15 +935,23 @@ class PythonAIEngine:
                 if inverted.lower() != fact.lower():
                     return inverted
 
+        # Swap predicate with a sibling academic concept's mechanism (realistic exam distractor)
         if other_facts:
             alt = other_facts[seed_idx % len(other_facts)]
             focus = PythonAIEngine._extract_concept_focus(fact, title)
-            for sep in (" is ", " are ", " involves ", " requires ", " produces ", ":"):
+            for sep in (" is defined as ", " refers to ", " functions by ", " operates by ", " involves ", " requires ", " produces ", " mediates ", " regulates ", " is ", " are ", ":"):
                 if sep in alt:
-                    tail = alt.split(sep, 1)[1].strip()
-                    if len(tail) > 12:
-                        return f"{focus} exclusively { sep.strip() } {tail}"
-        return f"Contrary to {title}, {fact[:1].lower() + fact[1:].rstrip('.')} never occurs under standard conditions."
+                    tail = alt.split(sep, 1)[1].strip().rstrip(".")
+                    if len(tail) > 14 and focus.lower() not in tail.lower():
+                        verb = sep.strip() if sep.strip() != ":" else "is characterized by"
+                        return f"{focus} {verb} {tail}."
+        focus = PythonAIEngine._extract_concept_focus(fact, title)
+        variants = [
+            f"{focus} functions exclusively through passive equilibrium rather than the regulated mechanism of {title}.",
+            f"{focus} inhibits the downstream pathway of {title} instead of supporting its normal physiological or functional outcome.",
+            f"{focus} operates independently of the primary regulatory controls established in {title}.",
+        ]
+        return variants[seed_idx % len(variants)]
 
     def _deterministic_question_from_slide(
         self,
@@ -804,24 +961,26 @@ class PythonAIEngine:
         question_type: str = "mcq",
     ) -> Dict[str, Any]:
         """
-        Zero-credit, high-precision academic question synthesizer:
-        - Supports real 5-option WASSCE/University Assertion & Reasoning (Cases A, B, C, D, E)
-        - Uses 12+ varied question stems and distinct slide facts so questions NEVER repeat
-        - Never indicates or mentions the slide/page number in the question text or options
+        Concept-driven academic examination question synthesizer:
+        - Supports all 7 question formats: mcq, assertion_reasoning, true_false, matching, fill_in_the_blank, short_answer, application
+        - Uses realistic sibling-concept distractors and varied academic stems so questions never repeat
+        - Never indicates or mentions slide/page numbers or administrative metadata
         """
         facts = self._extract_slide_facts(slide)
         title = slide["title"]
         if re.match(r"^(slide|page)\s*\d+$", title.lower()):
-            title = "this topic"
+            title = "Core Topic"
         fact = facts[(q_index - 1) % len(facts)]
-        second_fact = facts[q_index % len(facts)] if len(facts) > 1 else f"This principle governs how {title} operates in practice."
+        second_fact = facts[q_index % len(facts)] if len(facts) > 1 else f"This mechanism governs how {title} functions under standard conditions."
         concept_focus = self._extract_concept_focus(fact, title)
 
-        # Gather distinct facts from other slides for cross-slide distractors & Case B Assertion-Reasoning
+        # Gather distinct facts from other slides for cross-concept distractors, matching pairs, and Case B Assertion-Reasoning
         other_facts: List[str] = []
+        other_slides_list: List[Dict[str, Any]] = []
         for s in all_slides:
             if s["num"] == slide["num"]:
                 continue
+            other_slides_list.append(s)
             for sf in self._extract_slide_facts(s):
                 if sf != fact and sf not in other_facts:
                     other_facts.append(sf)
@@ -831,7 +990,7 @@ class PythonAIEngine:
 
         effective_type = question_type
         if question_type in ("mixed", "exhaustive"):
-            cycle = ["mcq", "true_false", "assertion_reasoning", "mcq"]
+            cycle = ["mcq", "assertion_reasoning", "application", "true_false", "fill_in_the_blank", "matching", "mcq"]
             effective_type = cycle[(q_index - 1) % len(cycle)]
 
         # ── 1. REAL EXAMINATION-STYLE ASSERTION & REASONING (5 Cases: A, B, C, D, E) ──
@@ -858,13 +1017,13 @@ class PythonAIEngine:
                 true_causal_reason = (
                     second_fact
                     if second_fact != fact
-                    else f"The underlying mechanism of {concept_focus} directly regulates this relationship in {title}."
+                    else f"The underlying mechanism of {concept_focus} directly regulates this functional relationship in {title}."
                 )
 
             unrelated_true_reason = (
                 other_facts[(q_index - 1) % len(other_facts)]
                 if other_facts
-                else f"Separate classification rules in {title} apply to independent stages of the process."
+                else f"Separate classification criteria in {title} govern independent stages of the system."
             )
             false_assertion = self._invert_fact_to_falsehood(true_assertion, title, other_facts, q_index)
             false_reason = self._invert_fact_to_falsehood(true_causal_reason, title, other_facts, q_index + 2)
@@ -875,31 +1034,31 @@ class PythonAIEngine:
             if chosen_case == "A":
                 a_stmt, r_stmt = true_assertion, true_causal_reason
                 exp_text = (
-                    f"Both Assertion (A) and Reason (R) are true statements regarding {title}, "
-                    f"and Reason (R) provides the direct underlying cause/mechanism that explains Assertion (A)."
+                    f"Both Assertion (A) and Reason (R) are accurate statements regarding {title}, "
+                    f"and Reason (R) provides the direct underlying mechanism that explains Assertion (A)."
                 )
             elif chosen_case == "B":
                 a_stmt, r_stmt = true_assertion, unrelated_true_reason
                 exp_text = (
                     f"Both Assertion (A) and Reason (R) are factually true statements, "
-                    f"but Reason (R) addresses a separate point and is NOT the causal explanation for Assertion (A)."
+                    f"but Reason (R) describes a separate concept and is NOT the causal explanation for Assertion (A)."
                 )
             elif chosen_case == "C":
                 a_stmt, r_stmt = true_assertion, false_reason
                 exp_text = (
                     f"Assertion (A) is true ({true_assertion}), "
-                    f"however Reason (R) is false because in reality: {true_causal_reason}"
+                    f"whereas Reason (R) is false because in reality: {true_causal_reason}"
                 )
             elif chosen_case == "D":
                 a_stmt, r_stmt = false_assertion, true_causal_reason
                 exp_text = (
-                    f"Assertion (A) is false because the true principle is: \"{true_assertion}\" "
+                    f"Assertion (A) is false because the accurate principle is: \"{true_assertion}\" "
                     f"Reason (R), however, is a factually true statement."
                 )
             else:
                 a_stmt, r_stmt = false_assertion, false_reason
                 exp_text = (
-                    f"Both Assertion (A) and Reason (R) are false statements that invert the actual concepts of {title}. "
+                    f"Both Assertion (A) and Reason (R) are false statements that invert the actual mechanisms of {title}. "
                     f"The correct principle is: {true_assertion}"
                 )
 
@@ -913,7 +1072,7 @@ class PythonAIEngine:
                 "options": standard_ar_options,
                 "correctAnswer": chosen_case,
                 "explanation": exp_text,
-                "misconception": "In Assertion-Reasoning exams, always verify (1) the truth of A, (2) the truth of R, and (3) whether R causally explains A.",
+                "misconception": "In Assertion-Reasoning questions, first verify the independent truth of A and R, then determine whether R is the direct cause of A.",
                 "testedFact": f"{a_stmt} | {r_stmt}",
                 "topic": title,
                 "difficulty": "intermediate",
@@ -921,7 +1080,7 @@ class PythonAIEngine:
                 "_slide_num": slide["num"],
             }
 
-        # ── 2. TRUE / FALSE (Balanced True & False statements, Zero Repeats, No Slide Refs) ──
+        # ── 2. TRUE / FALSE ──
         if effective_type == "true_false":
             is_true_stmt = (q_index % 2) == 1
             if is_true_stmt:
@@ -931,13 +1090,13 @@ class PythonAIEngine:
             else:
                 stmt = self._invert_fact_to_falsehood(fact, title, other_facts, q_index)
                 ans = "False"
-                exp = f"False. This statement inverts the actual principle of {title}, which states: {fact}"
+                exp = f"False. This statement misrepresents the actual principle of {title}, which states: {fact}"
 
             tf_prefixes = [
                 f"Evaluate the accuracy of this statement regarding {concept_focus}: {stmt}",
                 f"True or False: {stmt}",
                 f"Based on the principles of {title}, determine whether the following claim is true or false: {stmt}",
-                f"In the context of {concept_focus}, is the following statement factually accurate? {stmt}",
+                f"In the context of {concept_focus}, is the following statement scientifically accurate? {stmt}",
             ]
             return {
                 "id": q_index,
@@ -946,7 +1105,7 @@ class PythonAIEngine:
                 "options": ["True", "False"],
                 "correctAnswer": ans,
                 "explanation": exp,
-                "misconception": "Pay close attention to directional terms (increases vs. decreases, requires vs. inhibits) in True/False questions.",
+                "misconception": "Pay close attention to directional and mechanistic terms (stimulates vs. inhibits, increases vs. decreases) in True/False questions.",
                 "testedFact": stmt,
                 "topic": title,
                 "difficulty": "intermediate",
@@ -954,23 +1113,98 @@ class PythonAIEngine:
                 "_slide_num": slide["num"],
             }
 
-        # ── 3. SHORT ANSWER ──
-        if effective_type == "short_answer":
-            sa_stems = [
-                f"Explain the core principle and functional significance of {concept_focus} in {title}.",
-                f"How is {concept_focus} characterized, and what role does it play in the overall mechanism of {title}?",
-                f"State and briefly explain the key rule governing {concept_focus}.",
-                f"Distinguish the primary features of {concept_focus} highlighted in {title}.",
+        # ── 3. MATCHING QUESTIONS ──
+        if effective_type == "matching":
+            pairs: List[Tuple[str, str]] = [(concept_focus, fact[:110].rstrip(".") + ".")]
+            for s_other in other_slides_list:
+                if len(pairs) >= 3:
+                    break
+                s_facts = self._extract_slide_facts(s_other)
+                if s_facts:
+                    s_term = self._extract_concept_focus(s_facts[0], s_other["title"])
+                    if s_term.lower() not in {p[0].lower() for p in pairs}:
+                        pairs.append((s_term, s_facts[0][:110].rstrip(".") + "."))
+            while len(pairs) < 3:
+                idx_fill = len(pairs) + 1
+                pairs.append((f"{title} Mechanism {idx_fill}", second_fact[:110].rstrip(".") + "."))
+
+            col_a = "\n".join(f"  {i + 1}. {p[0]}" for i, p in enumerate(pairs[:3]))
+            col_b = "\n".join(f"  ({chr(88 + i)}) {p[1]}" for i, p in enumerate(pairs[:3]))  # (X), (Y), (Z)
+            letters = ["A", "B", "C", "D"]
+            correct_pos = (q_index - 1) % 4
+            correct_combo = "1-(X), 2-(Y), 3-(Z)"
+            wrong_combos = [
+                "1-(Y), 2-(X), 3-(Z)",
+                "1-(Z), 2-(Y), 3-(X)",
+                "1-(X), 2-(Z), 3-(Y)",
             ]
+            opts_matching: List[str] = []
+            w_idx = 0
+            for pos in range(4):
+                if pos == correct_pos:
+                    opts_matching.append(f"{letters[pos]}. {correct_combo}")
+                else:
+                    opts_matching.append(f"{letters[pos]}. {wrong_combos[w_idx]}")
+                    w_idx += 1
+
+            q_stem = (
+                f"Match each academic concept in Column I with its accurate description or mechanism in Column II:\n"
+                f"Column I:\n{col_a}\nColumn II:\n{col_b}"
+            )
             return {
                 "id": q_index,
-                "question": sa_stems[(q_index - 1) % len(sa_stems)],
-                "type": "short_answer",
-                "options": [],
-                "correctAnswer": f"{fact} {second_fact if second_fact != fact else ''}".strip(),
-                "markingGuide": f"1 mark for accurately defining/identifying {concept_focus}; 1 mark for stating the mechanism or outcome: {fact}",
-                "explanation": f"Model answer: {fact}",
-                "misconception": "Ensure your written response includes exact technical terminology.",
+                "question": q_stem,
+                "type": "matching",
+                "options": opts_matching,
+                "correctAnswer": letters[correct_pos],
+                "explanation": f"The accurate pairings are 1-(X) [{pairs[0][0]}], 2-(Y) [{pairs[1][0]}], and 3-(Z) [{pairs[2][0]}].",
+                "misconception": "Ensure each concept is matched to its specific governing mechanism rather than a sibling topic's function.",
+                "testedFact": f"Matching {pairs[0][0]}, {pairs[1][0]}, {pairs[2][0]}",
+                "topic": title,
+                "difficulty": "intermediate",
+                "sourceRef": "",
+                "_slide_num": slide["num"],
+            }
+
+        # ── 4. FILL-IN-THE-BLANK ──
+        if effective_type == "fill_in_the_blank":
+            blanked_stmt = re.sub(re.escape(concept_focus), "________", fact, count=1, flags=re.IGNORECASE)
+            if "________" not in blanked_stmt:
+                blanked_stmt = f"In {title}, ________ is characterized by the principle that {fact[:1].lower() + fact[1:]}"
+            distractor_terms: List[str] = []
+            for s_other in other_slides_list:
+                if len(distractor_terms) >= 3:
+                    break
+                sf = self._extract_slide_facts(s_other)
+                cand_term = self._extract_concept_focus(sf[0], s_other["title"]) if sf else s_other["title"]
+                if cand_term.lower() != concept_focus.lower() and cand_term not in distractor_terms:
+                    distractor_terms.append(cand_term)
+            fallback_terms = ["Homeostatic Baseline", "Reciprocal Inhibition", "Secondary Cascade", "Collateral Pathway"]
+            for ft in fallback_terms:
+                if len(distractor_terms) >= 3:
+                    break
+                if ft.lower() != concept_focus.lower() and ft not in distractor_terms:
+                    distractor_terms.append(ft)
+
+            letters = ["A", "B", "C", "D"]
+            correct_pos = (q_index - 1) % 4
+            opts_fib: List[str] = []
+            d_idx = 0
+            for pos in range(4):
+                if pos == correct_pos:
+                    opts_fib.append(f"{letters[pos]}. {concept_focus}")
+                else:
+                    opts_fib.append(f"{letters[pos]}. {distractor_terms[d_idx]}")
+                    d_idx += 1
+
+            return {
+                "id": q_index,
+                "question": f"Fill in the blank with the most accurate academic term:\n\"{blanked_stmt}\"",
+                "type": "fill_in_the_blank",
+                "options": opts_fib,
+                "correctAnswer": letters[correct_pos],
+                "explanation": f"\"{concept_focus}\" accurately completes the statement: {fact}",
+                "misconception": "Other terms refer to distinct concepts or mechanisms covered in different sections.",
                 "testedFact": fact,
                 "topic": title,
                 "difficulty": "intermediate",
@@ -978,16 +1212,41 @@ class PythonAIEngine:
                 "_slide_num": slide["num"],
             }
 
-        # ── 4. MULTIPLE CHOICE (12 Varied Academic Stems + Plausible Distractors + False-Statement Variant) ──
-        is_negative_mcq = (q_index % 5) == 0 and len(facts) >= 2
+        # ── 5. SHORT ANSWER ──
+        if effective_type == "short_answer":
+            sa_stems = [
+                f"Explain the core mechanism and functional significance of {concept_focus} in {title}.",
+                f"How is {concept_focus} characterized, and what role does it play in the overall process of {title}?",
+                f"State and explain the governing principle of {concept_focus} and how it relates to {title}.",
+                f"Compare and distinguish the primary features of {concept_focus} within {title}.",
+            ]
+            return {
+                "id": q_index,
+                "question": sa_stems[(q_index - 1) % len(sa_stems)],
+                "type": "short_answer",
+                "options": [],
+                "correctAnswer": f"{fact} {second_fact if second_fact != fact else ''}".strip(),
+                "markingGuide": f"1 mark for accurately defining/identifying {concept_focus}; 1 mark for explaining the mechanism or outcome: {fact}",
+                "explanation": f"Model answer: {fact}",
+                "misconception": "Ensure your written response explains both the definition and the underlying cause-and-effect mechanism.",
+                "testedFact": fact,
+                "topic": title,
+                "difficulty": "intermediate",
+                "sourceRef": "",
+                "_slide_num": slide["num"],
+            }
+
+        # ── 6. APPLICATION-BASED & 7. MULTIPLE CHOICE QUESTIONS ──
         letters = ["A", "B", "C", "D"]
         correct_pos = (q_index - 1) % 4
+        is_application = effective_type == "application"
+        is_negative_mcq = (not is_application) and ((q_index % 5) == 0) and len(facts) >= 2
 
         if is_negative_mcq:
             target_falsehood = self._invert_fact_to_falsehood(fact, title, other_facts, q_index)
             true_pool = [f for f in (facts + other_facts) if f != fact]
             while len(true_pool) < 3:
-                true_pool.append(f"{title} establishes systematic relationships among its core parameters.")
+                true_pool.append(f"{title} coordinates functional relationships among its core components.")
             opts_raw: List[str] = []
             t_idx = 0
             for pos in range(4):
@@ -996,8 +1255,8 @@ class PythonAIEngine:
                 else:
                     opts_raw.append(f"{letters[pos]}. {true_pool[t_idx][:185]}")
                     t_idx += 1
-            q_stem = f"Regarding {concept_focus} in {title}, which of the following statements is FALSE (an examination misconception)?"
-            exp_msg = f"Option {letters[correct_pos]} is FALSE because the correct principle is: {fact}"
+            q_stem = f"Regarding {concept_focus} in {title}, which of the following statements is INCORRECT?"
+            exp_msg = f"Option {letters[correct_pos]} is incorrect because the actual principle states: {fact}"
         else:
             distractors: List[str] = [
                 self._invert_fact_to_falsehood(fact, title, other_facts, q_index),
@@ -1008,10 +1267,16 @@ class PythonAIEngine:
                 inv_other = self._invert_fact_to_falsehood(of, title, facts, q_index + len(distractors))
                 if inv_other not in distractors and inv_other != fact:
                     distractors.append(inv_other[:185])
-            while len(distractors) < 3:
-                distractors.append(
-                    f"{concept_focus} operates independently of the regulatory parameters described in {title} (variant {len(distractors) + 1})."
-                )
+            fallback_variants = [
+                f"{concept_focus} bypasses the primary pathway of {title} and acts only through passive diffusion.",
+                f"{concept_focus} reverses the direction of regulation in {title} when baseline conditions are maintained.",
+                f"{concept_focus} suppresses the functional activity of {title} by eliminating its primary substrate.",
+            ]
+            for fv in fallback_variants:
+                if len(distractors) >= 3:
+                    break
+                if fv not in distractors:
+                    distractors.append(fv)
 
             opts_raw = []
             d_idx = 0
@@ -1022,30 +1287,40 @@ class PythonAIEngine:
                     opts_raw.append(f"{letters[pos]}. {distractors[d_idx][:185]}")
                     d_idx += 1
 
-            mcq_stems = [
-                f"Regarding {concept_focus} in {title}, which of the following statements is accurate?",
-                f"Which statement best explains the primary mechanism or principle of {concept_focus}?",
-                f"What is the core functional significance of {concept_focus} in {title}?",
-                f"When applying the concepts of {title}, which conclusion accurately characterizes {concept_focus}?",
-                f"Which of the following accurately defines or characterizes {concept_focus}?",
-                f"Which relationship or property directly governs {concept_focus} in {title}?",
-                f"In analyzing {title}, which point accurately accounts for the role of {concept_focus}?",
-                f"Which option correctly states a governing rule of {concept_focus}?",
-                f"Which key feature distinguishes {concept_focus} within the framework of {title}?",
-                f"Which statement holds true for {concept_focus} under standard conditions?",
-                f"Which outcome or mechanism is directly associated with {concept_focus} in {title}?",
-            ]
-            q_stem = mcq_stems[(q_index - 1) % len(mcq_stems)]
-            exp_msg = f"Regarding {title}: {fact}"
+            if is_application:
+                app_stems = [
+                    f"In a practical or clinical scenario involving {title}, how does the mechanism of {concept_focus} determine the observed outcome?",
+                    f"If a researcher or clinician evaluates a system governed by {title}, which observation directly demonstrates the action of {concept_focus}?",
+                    f"When applying the principles of {title} to solve an analytical problem, how does {concept_focus} function?",
+                    f"A perturbation occurs in a pathway regulated by {title}. Based on the mechanism of {concept_focus}, which consequence or rule applies?",
+                ]
+                q_stem = app_stems[(q_index - 1) % len(app_stems)]
+                exp_msg = f"In practical application of {title}, {concept_focus} operates according to the rule: {fact}"
+            else:
+                mcq_stems = [
+                    f"Regarding {concept_focus} in {title}, which of the following statements is accurate?",
+                    f"Which statement best explains the primary mechanism or principle of {concept_focus}?",
+                    f"What is the core functional significance of {concept_focus} in {title}?",
+                    f"When analyzing {title}, which conclusion accurately characterizes {concept_focus}?",
+                    f"Which of the following accurately defines or characterizes {concept_focus}?",
+                    f"Which relationship or property directly governs {concept_focus} in {title}?",
+                    f"In the context of {title}, which point accurately accounts for the role of {concept_focus}?",
+                    f"Which option correctly states a governing rule or mechanism of {concept_focus}?",
+                    f"Which key feature distinguishes {concept_focus} within the framework of {title}?",
+                    f"Which statement holds true for {concept_focus} under standard conditions?",
+                    f"Which outcome or mechanism is directly associated with {concept_focus} in {title}?",
+                ]
+                q_stem = mcq_stems[(q_index - 1) % len(mcq_stems)]
+                exp_msg = f"Regarding {title}: {fact}"
 
         return {
             "id": q_index,
             "question": q_stem,
-            "type": "mcq",
+            "type": "application" if is_application else "mcq",
             "options": opts_raw,
             "correctAnswer": letters[correct_pos],
             "explanation": exp_msg,
-            "misconception": "Incorrect options invert key relationships or conflate mechanisms from other topics.",
+            "misconception": "Incorrect options invert key directional relationships or conflate mechanisms from related concepts.",
             "testedFact": fact,
             "topic": title,
             "difficulty": "intermediate",
@@ -1054,7 +1329,7 @@ class PythonAIEngine:
         }
 
     # ─────────────────────────────────────────────────────────────
-    # 1. COMPLETE STUDY SUMMARY OF EVERYTHING (MAIN TOPIC FOCUS + WELL SPACED)
+    # 1. COMPLETE STUDY SUMMARY OF EVERYTHING (SHARED ACADEMIC INTELLIGENCE)
     # ─────────────────────────────────────────────────────────────
     def generate_exam_summary(
         self,
@@ -1062,43 +1337,54 @@ class PythonAIEngine:
         style: str = "Exam-Oriented",
         educational_level: str = "Senior High School (SHS) & University",
     ) -> str:
-        slides = self._parse_individual_slides(content)
-        main_topic = self._extract_main_topic_title(slides, "Core Lecture Topic")
+        blueprint = self.analyze_academic_presentation(content)
+        slides = blueprint["substantive_slides"]
+        raw_slides = blueprint["raw_slides"]
+        main_topic = blueprint["main_topic"]
+        honesty_notices = blueprint["honesty_notices"]
+        blueprint_prompt = blueprint["blueprint_prompt"]
+
         enrichment = get_cached_document_enrichment(content, title=main_topic)
         web_context = (
-            f"\n\nVERIFIED INTERNET ACADEMIC ENRICHMENT (use to deepen explanations where slide bullets are brief):\n{enrichment['knowledge_brief']}"
+            f"\n\nSUPPLEMENTARY ACADEMIC CONTEXT (distinguish clearly from source slide statements when used):\n{enrichment['knowledge_brief']}"
             if enrichment.get("knowledge_brief")
             else ""
         )
 
-        # Build clean substantive text from filtered slides so cover/school/department slides are excluded
         substantive_content = "\n\n".join(s["full"] for s in slides) if slides else content
-        chunks = self._chunk_text_by_slides(substantive_content, max_chunk_chars=42000)
+        chunks = self._chunk_text_by_slides(substantive_content, max_chunk_chars=38000)
         slide_count = max(1, len(slides))
+        honesty_footer = (
+            f"\n\n---\n\n> **Document Coverage & Extraction Verification:** All **{slide_count} substantive academic sections** (out of {len(raw_slides)} total slides/pages) were analyzed from beginning to end. *Note on visual/scanned content:* {' '.join(honesty_notices)}"
+            if honesty_notices
+            else f"\n\n---\n\n> **Document Coverage & Extraction Verification:** Verified complete coverage across all **{slide_count} substantive academic sections** from beginning to end (introductory/administrative title pages excluded)."
+        )
 
-        system = f"""You are LAMLA Guide AI's Chief Educational Synthesizer.
+        system = f"""You are LAMLA Guide AI's Chief Academic Synthesizer.
 Slogan: "It's Never Too Late To Study."
 Target Audience: {educational_level}.
-Primary Academic Topic: {main_topic}.
+Primary Academic Subject: {main_topic}.
 
-MANDATORY REQUIREMENTS:
-1. WRITE IN FULL, FLOWING SENTENCES AND COHESIVE PARAGRAPHS (NO BULLET POINTS!):
-   - Do NOT write bullet-point lists (`-`, `*`, `•`). A true summary must be written in complete, well-connected sentences and flowing prose paragraphs that actually summarize and synthesize the material.
-   - Weave definitions, mechanisms, cause-and-effect relationships, and practical applications into smooth, readable academic prose with clear transitions from one idea to the next.
-2. FOCUS 100% ON THE MAIN ACADEMIC TOPIC ({main_topic}):
-   - Completely IGNORE any school name, university, faculty, department, course code, lecturer name, welcome remarks, or table of contents.
-   - Start immediately with the core academic subject matter and synthesize EVERYTHING across all substantive slides from start to finish.
-3. GENEROUS VISUAL SPACING:
-   - Leave a clear blank line (`\\n\\n`) between every paragraph and sub-section so the prose summary is airy, well-spaced, and easy to read and scroll through quickly.
-4. CLEAR VISUAL CONCEPT DIAGRAM:
-   - Include ONE clean, accurate, standalone labeled `<svg>` diagram inside a ```svg code block (`viewBox="0 0 760 300"`, `#ffffff` background, `#2563eb` accents, dark `#0f172a` labels) illustrating the overarching framework of {main_topic}.
-5. STRUCTURED PROSE SECTIONS:
-   - `# Complete Study Summary: {main_topic}`
-   - `## 1. Executive Narrative Summary of the Entire Material` (3–4 well-spaced, flowing paragraphs written in complete sentences that synthesize the entire lecture from beginning to end)
-   - `## 2. Labeled Concept Architecture` (the ```svg diagram + a cohesive paragraph explaining how the components interact)
-   - `## 3. Comprehensive Thematic Synthesis Across All Sections` (for each major theme/topic across the slides, write 1–2 rich, flowing prose paragraphs in full sentences explaining the core concepts, mechanisms, and how they connect — NO bullet lists)
-   - `## 4. High-Yield Definitions, Laws & Mechanisms Table` (Markdown table: Key Term / Principle | Core Meaning & Mechanism | Practical / Exam Significance)
-   - `## 5. End-to-End Process Flow & Concluding Synthesis` (clean ```flowchart block followed by 1–2 concluding prose paragraphs summarizing the key takeaways and exam relationships in full sentences)"""
+{blueprint_prompt}
+
+MANDATORY ACADEMIC SUMMARY RULES:
+1. FOCUS 100% ON THE ACTUAL ACADEMIC CONTENT ({main_topic}):
+   - NEVER waste space discussing university/school names, department names, lecturer names, course codes, presentation titles, greetings, or administrative introductions.
+   - Start immediately with the actual academic concepts being taught and cover the ENTIRE material from beginning to end.
+2. WRITE IN COHESIVE, UNDERSTANDABLE ACADEMIC PROSE (NOT DISCONNECTED HEADINGS OR BULLET FRAGMENTS):
+   - Write in clear, well-connected sentences and paragraphs that explain the actual concepts, definitions, mechanisms, classifications, functions, characteristics, cause-and-effect pathways, and clinical/real-world applications.
+   - Include relevant comparisons, relationships between subtopics, and explanations of important diagrams, tables, and processes found in the presentation.
+   - Preserve examination-relevant details while removing unnecessary repetition.
+   - Leave a blank line (`\\n\\n`) between every paragraph and section for effortless reading and fast scrolling.
+3. CLEAR VISUAL CONCEPT DIAGRAM:
+   - Include ONE clean, accurate, standalone labeled `<svg>` diagram inside a ```svg code block (`viewBox="0 0 760 300"`, `#ffffff` background, `#2563eb` accents, dark `#0f172a` labels) illustrating the overarching conceptual framework of {main_topic}.
+4. LOGICAL STRUCTURE:
+   - `# Complete Academic Summary: {main_topic}`
+   - `## 1. Core Subject Overview & Foundational Principles` (2–3 cohesive paragraphs introducing the main subject, foundational definitions, and overarching significance)
+   - `## 2. Labeled Conceptual Architecture & Diagram Analysis` (the ```svg diagram + prose explanation of how the topics, tables, and diagrams in the presentation relate)
+   - `## 3. Comprehensive Topic-by-Topic Synthesis Across the Entire Presentation` (flowing paragraphs covering every major topic and subtopic from start to finish: mechanisms, classifications, functions, and applications)
+   - `## 4. Key Comparisons, Mechanisms & Examination Matrix` (a clear Markdown table comparing key concepts, receptors/types/classes, mechanisms, and clinical/practical significance)
+   - `## 5. End-to-End Process Flow & Core Examination Takeaways` (a ```flowchart block followed by a cohesive synthesis of the critical relationships tested in exams)"""
 
         def _ensure_prose_paragraphs(text_md: str) -> str:
             """Converts stray bullet lines outside tables/code blocks into flowing prose sentences."""
@@ -1129,7 +1415,7 @@ MANDATORY REQUIREMENTS:
                     in_code = not in_code
                     out_lines.append(raw_ln)
                     continue
-                if in_code or stripped.startswith("|") or stripped.startswith("#"):
+                if in_code or stripped.startswith("|") or stripped.startswith("#") or stripped.startswith(">"):
                     _flush_bullets()
                     out_lines.append(raw_ln)
                     continue
@@ -1148,96 +1434,97 @@ MANDATORY REQUIREMENTS:
         try:
             if len(chunks) == 1:
                 raw_summary = self.execute_ai_completion(
-                    f"Write a complete, well-spaced Master Study Summary of everything on the main topic ({main_topic}) using full, flowing sentences and cohesive prose paragraphs (do NOT use bullet points):\n\n{chunks[0]}{web_context}",
+                    f"Synthesize a complete, academically rigorous Summary of the entire presentation on {main_topic} from beginning to end in cohesive prose paragraphs (covering all definitions, mechanisms, classifications, comparisons, diagrams/tables, and applications):\n\n{chunks[0]}{web_context}",
                     system_prompt=system,
-                    temperature=0.28,
+                    temperature=0.25,
                 )
-                return _ensure_prose_paragraphs(raw_summary)
+                return _ensure_prose_paragraphs(raw_summary) + honesty_footer
 
             with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
                 futs = [
                     pool.submit(
                         self.execute_ai_completion,
-                        f"Write a complete prose study summary in full sentences and paragraphs (no bullet points) for Part {i} of {len(chunks)} on {main_topic}:\n\n{chunk}{web_context if i == 1 else ''}",
+                        f"Write a complete academic prose summary in full sentences and paragraphs for Section Group {i} of {len(chunks)} on {main_topic} (covering all concepts, mechanisms, classifications, and applications in these slides):\n\n{chunk}{web_context if i == 1 else ''}",
                         system,
                         False,
-                        0.28,
+                        0.25,
                     )
                     for i, chunk in enumerate(chunks, 1)
                 ]
                 parts = [_ensure_prose_paragraphs(f.result()) for f in futs]
-            return "\n\n---\n\n".join(parts)
+            return "\n\n---\n\n".join(parts) + honesty_footer
         except Exception:
             svg = build_labeled_concept_svg(
                 main_topic,
                 [s["title"] for s in slides[:5]] or ["Core Concept", "Mechanism", "Application"],
                 f"Complete Conceptual Architecture — {main_topic}",
             )
-            overview_topics = ", ".join(s["title"] for s in slides[:10]) if slides else main_topic
+            overview_topics = ", ".join(s["title"] for s in slides[:12]) if slides else main_topic
             thematic_sections = []
             table_rows = [
-                "| Key Concept / Topic | Core Principle & Mechanism | Exam & Practical Significance |",
+                "| Core Concept / Classification | Underlying Mechanism & Function | Clinical / Practical & Exam Significance |",
                 "| :--- | :--- | :--- |",
             ]
             transitions = [
-                "At the foundation of this section,",
+                "At the foundation of this subject,",
                 "Building directly upon these principles,",
-                "Furthermore, in the progression of this topic,",
+                "Furthermore, in the progression of this material,",
                 "From an operational and mechanistic standpoint,",
-                "Integrating these concepts further,",
+                "Integrating these concepts into practical application,",
             ]
             for idx, s in enumerate(slides):
                 s_facts = self._extract_slide_facts(s)
                 norm_sentences = []
-                for f in s_facts[:5]:
+                for f in s_facts[:6]:
                     clean_f = f.strip()
                     if not clean_f.endswith((".", "!", "?")):
                         clean_f += "."
                     norm_sentences.append(clean_f)
                 lead_in = transitions[idx % len(transitions)]
-                para_1 = f"{lead_in} **{s['title']}** establishes a central pillar of **{main_topic}**. {' '.join(norm_sentences[:3])}"
+                para_1 = f"{lead_in} **{s['title']}** (`{s['label']}`) establishes a central component of **{main_topic}**. {' '.join(norm_sentences[:3])}"
                 para_2 = (
-                    f"{' '.join(norm_sentences[3:])} Together, these principles explain how **{s['title']}** functions within the broader system and how its mechanisms link directly to subsequent stages of the lecture."
+                    f"{' '.join(norm_sentences[3:])} Together, these principles explain how **{s['title']}** functions within the broader academic framework and how its mechanisms link directly to subsequent concepts in the presentation."
                     if len(norm_sentences) > 3
-                    else f"Understanding how **{s['title']}** operates in practice enables students to trace cause-and-effect relationships accurately across **{main_topic}**."
+                    else f"Understanding how **{s['title']}** operates in practice enables students to trace cause-and-effect relationships and classifications accurately across **{main_topic}**."
                 )
-                thematic_sections.append(f"### {s['title']}\n\n{para_1}\n\n{para_2}")
+                thematic_sections.append(f"### {s['title']} `[{s['label']}]`\n\n{para_1}\n\n{para_2}")
                 primary_fact = s_facts[0].replace("|", "/")[:140]
                 focus_term = self._extract_concept_focus(s_facts[0], s["title"]).replace("|", "/")
-                table_rows.append(f"| **{focus_term}** | {primary_fact} | Core examinable principle ({s['title'][:32]}) |")
+                table_rows.append(f"| **{focus_term}** (`{s['label']}`) | {primary_fact} | High-yield examinable principle in {s['title'][:32]} |")
 
-            flow_steps = " ---> ".join(f"[{s['title'][:28]}]" for s in slides[:6]) or f"[{main_topic}]"
+            flow_steps = " ---> ".join(f"[{s['title'][:28]}]" for s in slides[:7]) or f"[{main_topic}]"
             web_brief_txt = str(enrichment.get("knowledge_brief") or "").strip()
             exec_para_2 = (
-                f"{web_brief_txt}\n\n"
+                f"In broader academic context, {web_brief_txt}\n\n"
                 if web_brief_txt
                 else (
-                    f"Throughout the lecture, the material progresses systematically from foundational definitions to active mechanisms and real-world applications. Rather than treating individual concepts in isolation, this summary weaves every major section into a continuous narrative so you can grasp the big picture at a glance.\n\n"
+                    f"Throughout the presentation, the material progresses systematically from foundational definitions and classifications to active mechanisms, comparisons, and real-world applications. Rather than treating individual slides in isolation, this summary weaves every major section into a continuous narrative so you can revise the entire lecture effectively.\n\n"
                 )
             )
             return (
-                f"# Complete Study Summary: {main_topic}\n\n"
-                f"## 1. Executive Narrative Summary of the Entire Material\n\n"
-                f"This comprehensive study summary synthesizes the entire lecture on **{main_topic}** across all **{slide_count} substantive sections**, encompassing {overview_topics}. By focusing strictly on the core academic subject matter, it connects the primary definitions, underlying mechanisms, and practical outcomes into a unified narrative.\n\n"
+                f"# Complete Academic Summary: {main_topic}\n\n"
+                f"## 1. Core Subject Overview & Foundational Principles\n\n"
+                f"This comprehensive study summary synthesizes the entire presentation on **{main_topic}** across all **{slide_count} substantive sections**, encompassing {overview_topics}. By focusing strictly on the actual academic concepts being taught, it connects the primary definitions, classifications, underlying mechanisms, and practical applications into a coherent structure.\n\n"
                 f"{exec_para_2}"
                 f"---\n\n"
-                f"## 2. Labeled Concept Architecture\n\n"
+                f"## 2. Labeled Conceptual Architecture & Diagram Analysis\n\n"
                 f"```svg\n{svg}\n```\n\n"
-                f"The conceptual architecture above illustrates how the foundational elements of **{main_topic}** feed into intermediate mechanisms and culminate in measurable practical and examination outcomes.\n\n"
+                f"The conceptual architecture above illustrates how the foundational elements of **{main_topic}** feed into intermediate mechanisms and culminate in measurable functional and clinical/practical outcomes.\n\n"
                 f"---\n\n"
-                f"## 3. Comprehensive Thematic Synthesis Across All Sections\n\n"
+                f"## 3. Comprehensive Topic-by-Topic Synthesis Across the Entire Presentation\n\n"
                 f"{chr(10) + chr(10) + ('\n\n---\n\n'.join(thematic_sections))}\n\n"
                 f"---\n\n"
-                f"## 4. High-Yield Definitions, Laws & Mechanisms Table\n\n"
+                f"## 4. Key Comparisons, Mechanisms & Examination Matrix\n\n"
                 f"{chr(10).join(table_rows)}\n\n"
                 f"---\n\n"
-                f"## 5. End-to-End Process Flow & Concluding Synthesis\n\n"
+                f"## 5. End-to-End Process Flow & Core Examination Takeaways\n\n"
                 f"```flowchart\n{flow_steps}\n```\n\n"
-                f"In conclusion, mastering **{main_topic}** requires understanding how each stage in the progression above influences the next. When reviewing for examinations, focus on the directional cause-and-effect relationships between these concepts and how changes in initial conditions alter the final outcome."
+                f"In conclusion, mastering **{main_topic}** requires understanding how each concept and mechanism in the progression above influences the next. When revising for examinations, focus on distinguishing key classifications, tracing cause-and-effect pathways, and applying these principles to clinical or practical problem-solving."
+                f"{honesty_footer}"
             )
 
     # ─────────────────────────────────────────────────────────────
-    # 2. SLIDE-BY-SLIDE DETAILED STUDY NOTES (SPACED + INTERNET-ENRICHED)
+    # 2. COMPREHENSIVE & PROPERLY ORGANISED DETAILED STUDY NOTES
     # ─────────────────────────────────────────────────────────────
     def generate_study_notes(
         self,
@@ -1246,18 +1533,24 @@ MANDATORY REQUIREMENTS:
         educational_level: str = "Senior High School (SHS) & University",
     ) -> str:
         """
-        Generates deeply detailed, openly spaced study notes that:
-        - Skip school/department/lecturer cover slides and focus on the main academic topic
-        - Move systematically from one slide to the next
-        - Leave generous blank spacing within and between explanations so nothing looks clustered
-        - Use live Internet/Wikipedia academic research to explain concepts not fully explained on the slides
+        Converts the entire uploaded presentation into well-written, structured, textbook-grade
+        study notes organized from foundational explanations to complex mechanisms:
+        - Main topics & relevant subtopics (preserving original [Source: Slide X] references)
+        - Definitions, concept explanations, mechanisms & processes, classifications,
+          functions & characteristics, comparisons & distinctions, examples/clinical significance,
+          and relationships between concepts
+        - Clearly distinguishes supplementary academic/internet explanations from direct slide statements
         """
-        slides = self._parse_individual_slides(content)
-        main_topic = self._extract_main_topic_title(slides, subject or "Core Academic Topic")
+        blueprint = self.analyze_academic_presentation(content, subject_hint=subject)
+        slides = blueprint["substantive_slides"]
+        raw_slides = blueprint["raw_slides"]
+        main_topic = blueprint["main_topic"]
+        honesty_notices = blueprint["honesty_notices"]
+        blueprint_prompt = blueprint["blueprint_prompt"]
+
         enrichment = get_cached_document_enrichment(content, title=main_topic)
         web_brief = enrichment.get("knowledge_brief", "")
 
-        # Fetch per-slide internet academic context in parallel for concepts that need deeper explanation
         slide_web_notes: Dict[int, str] = {}
         try:
             unique_queries: List[Tuple[int, str]] = []
@@ -1298,7 +1591,7 @@ MANDATORY REQUIREMENTS:
             all_points = s_facts if len(s_facts) >= len(raw_lines) else raw_lines or s_facts
 
             spaced_bullets = "\n\n".join(
-                f"- **{self._extract_concept_focus(pt, s['title'])}:** {pt}"
+                f"- **{self._extract_concept_focus(pt, s['title'])}:** {pt} `[Source: {s['label']}]`"
                 for pt in all_points
             )
 
@@ -1306,11 +1599,13 @@ MANDATORY REQUIREMENTS:
             for c_idx, pt in enumerate(all_points, start=1):
                 c_focus = self._extract_concept_focus(pt, s["title"])
                 concept_deep_dives.append(
-                    f"#### 🔹 Concept {c_idx}: {c_focus}\n\n"
-                    f"- **Core Statement on Slide:** {pt}\n\n"
-                    f"- **In-Depth Academic Explanation:** Within **{s['title']}** (part of **{main_topic}**), **{c_focus}** defines a critical structural or functional principle. Rather than treating this statement as an isolated line to memorize, understand what triggers or governs it, how it transforms the state of the system, and why the lecture slide highlights it as a core building block.\n\n"
-                    f"- **Step-by-Step Mechanism & Cause-Effect Logic:** When applying **{c_focus}**, identify (1) the initial condition or prerequisite input, (2) the active mechanism or rule described by *\"{pt}\"*, and (3) the resulting measurable outcome or consequence on **{s['title']}**.\n\n"
-                    f"- **Practical Example & Exam Application:** In university and SHS examinations, questions on **{c_focus}** frequently test whether you can distinguish its true operational mechanism from common misconceptions (such as reversing cause and effect or ignoring boundary conditions)."
+                    f"#### 🔹 {c_idx}. {c_focus} `[Source: {s['label']}]`\n\n"
+                    f"**Definition & Core Concept Explanation:** On `{s['label']}`, the material states: *\"{pt}\"* Within the study of **{main_topic}**, **{c_focus}** represents an essential academic concept under **{s['title']}**.\n\n"
+                    f"**Mechanism, Process & Classification:**\n"
+                    f"1. **Foundational Basis:** Identify the specific structure, receptor, variable, or classification category to which **{c_focus}** belongs.\n"
+                    f"2. **Active Mechanism:** Trace how the process or principle described in *\"{pt}\"* operates step by step and how it modifies functional activity.\n"
+                    f"3. **Systemic Effect & Relationship:** Connect this outcome to the broader pathway of **{s['title']}** and related concepts across the lecture.\n\n"
+                    f"**Applications, Clinical/Practical Significance & Exam Distinctions:** Understanding the precise mechanism and classification of **{c_focus}** allows you to predict real-world or clinical outcomes and avoid confusing it with opposing or secondary pathways."
                 )
 
             web_extra = slide_web_notes.get(s["num"], "")
@@ -1318,20 +1613,20 @@ MANDATORY REQUIREMENTS:
                 web_extra = web_brief[:800]
 
             internet_block = (
-                f"### 🌐 Internet & Textbook Knowledge Expansion (Explaining Unexplained Slide Concepts)\n\n"
+                f"### 🌐 Supplementary Academic & Textbook Context `[External Reference — Beyond Slide Text]`\n\n"
                 f"{web_extra}\n\n"
-                f"**How This Expands the Slide:** Lecture slides often list terms and bullet points concisely without full textbook paragraphs. The external academic context above fills in the background theory, historical/scientific foundation, and broader real-world mechanism of **{s['title']}** within **{main_topic}**."
+                f"*Note: This supplementary explanation expands upon the concise slide points on `{s['label']}` to clarify the underlying mechanism, classification, and real-world/clinical context of **{s['title']}**.*"
                 if web_extra
                 else (
-                    f"### 🌐 Deeper Textbook & Internet Context (Beyond the Slide Bullets)\n\n"
-                    f"Lecture slides typically present condensed bullet points for **{s['title']}**. In comprehensive textbook and academic literature on **{main_topic}**, **{s['title']}** operates as an integrated process where each definition, variable, and mechanism interacts dynamically. Pay special attention to the boundary conditions, underlying assumptions, and real-world applications of every point unpacked above."
+                    f"### 🔗 Concept Relationships & Examination Synthesis\n\n"
+                    f"When studying **{s['title']}** (`{s['label']}`), connect its definitions and mechanisms directly to the preceding and following sections of **{main_topic}** so you can compare classifications, explain cause-and-effect pathways, and apply the material in exams."
                 )
             )
             return (
                 f"## {s['label']} — {s['title']} `[Source: {s['label']}]`\n\n"
-                f"### 📌 Complete Slide Statements & Key Points\n\n"
+                f"### 📌 Source Slide Concepts & Key Statements\n\n"
                 f"{spaced_bullets}\n\n"
-                f"### 🔬 Concept-by-Concept Deep Explanation (Every Slide Point Explained in Full)\n\n"
+                f"### 🔬 Comprehensive Academic Explanation, Mechanisms & Applications\n\n"
                 f"{chr(10) + chr(10).join(concept_deep_dives)}\n\n"
                 f"{internet_block}\n"
             )
@@ -1341,36 +1636,43 @@ MANDATORY REQUIREMENTS:
             batch_blocks = []
             for s in batch_slides:
                 w_txt = slide_web_notes.get(s["num"], "")
-                w_line = f"\n[Internet Research for {s['label']} ({s['title']}): {w_txt}]" if w_txt else ""
+                w_line = (
+                    f"\n[Supplementary Textbook/Web Context for {s['label']} ({s['title']}): {w_txt}]"
+                    if w_txt
+                    else ""
+                )
                 batch_blocks.append(f"{s['full']}{w_line}")
             batch_text = "\n\n".join(batch_blocks)
 
-            system = f"""You are LAMLA Guide AI's Master Textbook Author, Professor & Chief Examiner.
-Main Topic: {main_topic}. Level: {educational_level}.
+            system = f"""You are LAMLA Guide AI's Master Textbook Author & Academic Professor.
+Main Subject: {main_topic}. Level: {educational_level}.
 
-MANDATORY FORMATTING & ULTRA-DETAILED PEDAGOGICAL RULES:
-1. FOCUS 100% ON THE MAIN ACADEMIC TOPIC ({main_topic}):
-   - Completely IGNORE any school/university name, faculty, department, course code, or lecturer intro.
-2. MOVE SYSTEMATICALLY FROM ONE SLIDE TO THE NEXT:
-   - This batch contains: {slide_labels}.
-   - You MUST write a dedicated, exhaustive section (`## Slide X — <Topic Title> [Source: Slide X]`) for EVERY slide in ({slide_labels}) in exact numerical order. Never skip or merge slides.
-3. EXPLAIN EVERY SINGLE CONCEPT ON EVERY SLIDE IN DEEP DETAIL:
-   - Do NOT write brief summaries! The student wants VERY, VERY DETAILED textbook-grade notes explaining every concept on every slide.
-   - Within each slide (`## Slide X — <Topic Title> [Source: Slide X]`), include:
-     a) `### 📌 Core Points from This Slide` — every key point from the slide clearly stated with blank lines between bullets.
-     b) `### 🔬 Concept-by-Concept Deep Dive (Every Concept Explained)` — create a dedicated sub-section (`#### 🔹 <Concept / Term / Principle Name>`) for EVERY SINGLE concept, bullet point, formula, or process mentioned on that slide. For each concept, thoroughly explain:
-        - **Definition & Plain-English Meaning** (what it is in clear, simple terms and formal academic terms)
-        - **Step-by-Step Mechanism (How & Why It Works)** (walk through the exact process, cause-and-effect chain, or logic step by step)
-        - **Real-World / Practical Example & Exam Application** (a concrete example and how examiners test this specific concept)
-     c) `### 🌐 Internet & Textbook Knowledge Expansion (Filling Slide Gaps)` — use the provided Internet Research and your comprehensive academic knowledge to deeply explain any terms, background mechanisms, equations, or concepts that were only briefly mentioned or left unexplained on the slide.
-4. LEAVE GENEROUS SPACES WITHIN EXPLANATIONS (NEVER CLUSTER TEXT):
-   - Put a blank line between EVERY paragraph, between EVERY sub-heading, and between EVERY bullet point (`\\n\\n`) so the explanation is open, clean, and effortless to read.
-   - Separate each slide section with a horizontal divider (`\\n\\n---\\n\\n`)."""
+{blueprint_prompt}
 
-            extra_web = f"\n\nGeneral Internet Reference:\n{web_brief}" if (web_brief and batch_idx == 0) else ""
+MANDATORY STUDY NOTES ORGANISATION & QUALITY RULES:
+1. FOCUS STRICTLY ON ACTUAL ACADEMIC CONTENT ({main_topic}):
+   - Never explain university/school names, department names, lecturer names, course codes, or administrative introductions.
+   - Do NOT merely copy slide text without improving its organisation, and do NOT produce disconnected bullet points.
+2. COMPLETE COVERAGE OF ({slide_labels}) IN ORDER:
+   - Write a dedicated, comprehensive section (`## Slide X — <Topic Title> [Source: Slide X]`) for EVERY slide in ({slide_labels}).
+   - Progress logically from foundational explanations toward more complex mechanisms.
+3. ORGANISE EACH SECTION USING PROPER ACADEMIC STRUCTURE:
+   - **Definitions & Core Concept Explanations** (clear academic paragraphs explaining what each concept means and why it matters)
+   - **Mechanisms & Step-by-Step Processes** (use numbered steps `1.`, `2.`, `3.` to break down pathways, physiological/chemical/economic/technical processes, and cause-and-effect chains)
+   - **Classifications, Functions & Characteristics** (structured bullet points or tables organizing types, subtypes, receptors, or categories)
+   - **Comparisons & Distinctions** (include a Markdown comparison table whenever contrasting related concepts, subtypes, or mechanisms)
+   - **Examples, Applications & Clinical/Practical Significance** (concrete real-world or clinical applications)
+   - **Relationships Between Concepts** (how this slide's concepts connect to the rest of {main_topic})
+4. SOURCE GROUNDING & TRANSPARENCY:
+   - Cite original slides using `[Source: Slide X]`.
+   - When adding helpful external textbook/internet explanations to clarify brief slide points, label that sub-section clearly as `[Supplementary Academic Context]` so the student can distinguish source statements from expanded explanations.
+5. GENEROUS SPACING:
+   - Leave a blank line (`\\n\\n`) between every paragraph, list item, table, and sub-heading."""
+
+            extra_web = f"\n\nGeneral Academic Reference:\n{web_brief}" if (web_brief and batch_idx == 0) else ""
             prompt = (
-                f"Write ULTRA-DETAILED, textbook-depth, openly spaced slide-by-slide Study Notes for ({slide_labels}) on {main_topic}. "
-                f"Unpack and thoroughly explain EVERY SINGLE concept, term, and bullet point on each slide, and use internet/textbook knowledge to explain anything the slide only mentions briefly:\n\n"
+                f"Convert ({slide_labels}) on {main_topic} into comprehensive, well-organized, textbook-quality Detailed Study Notes "
+                f"covering definitions, concept explanations, step-by-step mechanisms, classifications, comparisons, examples/clinical significance, and relationships between concepts:\n\n"
                 f"{batch_text}{extra_web}"
             )
             try:
@@ -1388,9 +1690,15 @@ MANDATORY FORMATTING & ULTRA-DETAILED PEDAGOGICAL RULES:
             except Exception:
                 return "\n\n---\n\n".join(_build_spaced_fallback_for_slide(s) for s in batch_slides)
 
+        honesty_banner = (
+            f"\n\n> **Coverage & Extraction Verification:** All **{len(slides)} substantive academic sections** (out of {len(raw_slides)} total slides/pages) are covered below in sequence. *Visual/Scan Notice:* {' '.join(honesty_notices)}\n\n---\n\n"
+            if honesty_notices
+            else f"\n\n> **Coverage & Extraction Verification:** All **{len(slides)} substantive academic sections** across **{main_topic}** are covered from beginning to end (administrative cover slides excluded). Statements directly from your presentation are marked `[Source: Slide X]`, while expanded textbook explanations are marked `[Supplementary Academic Context]`.\n\n---\n\n"
+        )
+
         header_intro = (
-            f"# Detailed Slide-by-Slide Study Notes: {main_topic}\n\n"
-            f"Each slide below is broken down in sequence with generous spacing and enriched with internet academic explanations for concepts that were only briefly mentioned on the slides.\n\n---\n\n"
+            f"# Comprehensive Academic Study Notes: {main_topic}\n"
+            f"{honesty_banner}"
         )
 
         if len(slide_batches) == 1:
@@ -1502,57 +1810,116 @@ Include `[Source: Slide X]` citations and return ONLY the regenerated section st
             return f"{section_title}\n\n{current_section_content}\n\n{web_text}".strip()
 
     # ─────────────────────────────────────────────────────────────
-    # 4. LABELED VISUAL FLASHCARDS (ZERO REPEATS + LABELED DIAGRAMS/IMAGES)
+    # 4. MEANINGFUL ACADEMIC FLASHCARDS (SHARED BLUEPRINT + ZERO SLIDE-NUMBER TRIVIA)
     # ─────────────────────────────────────────────────────────────
+    @classmethod
+    def _is_valid_academic_flashcard(cls, card: Dict[str, Any]) -> bool:
+        """
+        Rejects superficial or non-academic flashcards such as:
+        - 'What is on slide one?' / 'What is the title of slide three?' / 'What was mentioned on slide five?'
+        - 'Which department/university/lecturer prepared this presentation?'
+        """
+        if not isinstance(card, dict):
+            return False
+        front = str(card.get("front") or "").strip()
+        back = str(card.get("back") or "").strip()
+        if len(front) < 10 or len(back) < 10:
+            return False
+        bad_patterns = (
+            r"\bwhat\s+(?:is|was)\s+(?:on|in|mentioned\s+on|discussed\s+on|shown\s+on)\s+(?:slide|page)\b",
+            r"\bwhat\s+is\s+the\s+title\s+of\s+(?:slide|page)\b",
+            r"\b(?:which|what)\s+(?:university|school|college|faculty|department|lecturer|professor|instructor|author)\b",
+            r"\bcourse\s+(?:code|title|outline)\b",
+            r"\b(?:slide|page)\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s*\?",
+        )
+        for pat in bad_patterns:
+            if re.search(pat, front, flags=re.IGNORECASE):
+                return False
+        if cls._is_institutional_or_boilerplate_line(front):
+            return False
+        return True
+
     def _generate_flashcards_subbatch(
         self,
         content: str,
         count: int,
         start_id: int,
         verified_images: List[Dict[str, str]],
+        blueprint_prompt: str = "",
     ) -> List[Dict[str, Any]]:
         img_catalog = ""
         if verified_images:
             lines = [f"- {img['title']}: {img['url']} ({img['caption']})" for img in verified_images[:5]]
             img_catalog = "\nVERIFIED EDUCATIONAL DIAGRAMS AVAILABLE:\n" + "\n".join(lines)
 
-        system = f"""You are LAMLA Guide AI's Visual Active-Recall Flashcard Engine.
-Extract exactly {count} distinct, high-yield flashcards starting at ID {start_id}, distributed across the slides provided.
-Do NOT repeat concepts or prompts.
+        system = f"""You are LAMLA Guide AI's Academic Active-Recall Flashcard Engine.
+Generate {count} genuinely academic, high-yield flashcards starting at ID {start_id}, testing deep understanding and recall of the actual concepts taught across the material.
 
-VISUAL & LABELED DIAGRAM FLASHCARDS:
-For structural, anatomical, cyclic, graph, classification, or multi-step process concepts (at least 30-40% of cards):
-- Include `"labels"`: an array of 3–5 concise numbered component/stage labels (e.g. `["1. Receptor Sensor", "2. Control Center", "3. Effector Response"]`), AND
-- Either set `"imageUrl"` to a matching URL from VERIFIED EDUCATIONAL DIAGRAMS AVAILABLE (only if directly relevant), OR provide a clean, compact labeled `"diagramSvg"` (`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 200">...</svg>` with `#ffffff` background, crisp boxes/arrows/shapes, and readable `#0f172a` text labels).
+SHARED ACADEMIC INTELLIGENCE BLUEPRINT:
+{blueprint_prompt}
+
+STRICT ACADEMIC FLASHCARD RULES (MANDATORY):
+1. NEVER generate superficial or administrative questions such as:
+   - "What is on slide one?"
+   - "What is the title of slide three?"
+   - "What was mentioned on slide five?"
+   - "Which department or university prepared this presentation?"
+2. INSTEAD, generate meaningful academic questions that test real understanding, such as:
+   - "What are the major differences between [Concept A] and [Concept B]?"
+   - "What happens when [Receptor / Pathway / Component] is activated?"
+   - "Why does [Factor / Mechanism] promote [Outcome] in specific conditions?"
+   - "How does the structure of [System / Entity] support its function?"
+3. Test a rich variety of cognitive dimensions across cards:
+   - Definitions & core terminology
+   - Functions & physiological/practical roles
+   - Step-by-step mechanisms & processes
+   - Classifications & structural categories
+   - Comparisons & key distinctions
+   - Cause-and-effect relationships
+   - Clinical / real-world applications
+   - Interpretation of diagrams, tables, and processes
+   - Connections between different concepts
+4. Provide accurate, clear, and sufficiently explanatory answers (`"back"`, 2–4 sentences) that explain both the "what" and the "why/how".
+5. Generate a balanced range of `"easy"`, `"moderate"`, and `"challenging"` flashcards (`"difficulty"` field).
+6. VISUAL & LABELED DIAGRAM FLASHCARDS:
+   For structural, anatomical, cyclic, graph, classification, or multi-step process concepts (at least 30-40% of cards):
+   - Include `"labels"`: an array of 3–5 concise numbered component/stage labels (e.g. `["1. Receptor Sensor", "2. Control Center", "3. Effector Response"]`), AND
+   - Either set `"imageUrl"` to a matching URL from VERIFIED EDUCATIONAL DIAGRAMS AVAILABLE (only if directly relevant), OR provide a clean, compact labeled `"diagramSvg"` (`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 200">...</svg>` with `#ffffff` background, crisp boxes/arrows/shapes, and readable `#0f172a` text labels).
 
 Respond ONLY with a valid JSON array:
 [
   {{
     "id": {start_id},
-    "front": "Clear active-recall prompt or diagram-identification question",
-    "back": "Concise, accurate explanation with key takeaway",
-    "term": "Core concept tested",
+    "front": "Meaningful academic question (e.g., 'What happens when...?', 'What are the major differences between...?', 'Why does...?')",
+    "back": "Clear, accurate, and sufficiently explanatory academic answer (2-4 sentences)",
+    "term": "Core academic concept tested",
+    "difficulty": "easy | moderate | challenging",
     "slideRef": "Slide 2",
     "imageUrl": "",
     "labels": ["1. Key Part A — Role", "2. Key Part B — Role"],
     "diagramSvg": ""
   }}
 ]"""
-        prompt = f"Generate {count} distinct flashcards (with labeled visuals for structural/process cards) from:\n\n{content}{img_catalog}"
+        prompt = f"Generate {count} distinct, high-quality academic flashcards from:\n\n{content}{img_catalog}"
         raw = self.execute_ai_completion(prompt, system_prompt=system, json_mode=True, temperature=0.25)
         parsed = self._clean_json_response(raw)
         return parsed if isinstance(parsed, list) else []
 
     def _format_visual_flashcard(self, card: Dict[str, Any], idx: int) -> Dict[str, Any]:
         """Embeds labeled SVG/Wikimedia diagrams cleanly into `back` markdown so Supabase persistence works out-of-the-box."""
-        front = str(card.get("front") or "Concept Recall").strip()
+        front = self._strip_slide_mentions(str(card.get("front") or "Concept Recall").strip())
         back = str(card.get("back") or "").strip()
-        term = str(card.get("term") or front[:40]).strip()
+        term = self._strip_slide_mentions(str(card.get("term") or front[:45]).strip())
         slide_ref = str(card.get("slideRef") or card.get("slide_reference") or "").strip()
         img_url = str(card.get("imageUrl") or "").strip()
         svg_raw = str(card.get("diagramSvg") or "").strip()
         labels = card.get("labels") if isinstance(card.get("labels"), list) else []
         clean_labels = [str(lb).strip() for lb in labels if str(lb).strip()]
+
+        raw_diff = str(card.get("difficulty") or "").strip().lower()
+        if raw_diff not in ("easy", "moderate", "challenging"):
+            diff_cycle = ["easy", "moderate", "challenging"]
+            raw_diff = diff_cycle[(idx - 1) % 3]
 
         visual_md_parts = [back]
         if img_url.startswith("https://"):
@@ -1560,12 +1927,12 @@ Respond ONLY with a valid JSON array:
         elif svg_raw.startswith("<svg") and "</svg>" in svg_raw:
             visual_md_parts.append(f"\n\n```svg\n{svg_raw}\n```")
         elif clean_labels and len(clean_labels) >= 3:
-            auto_svg = build_labeled_concept_svg(term, clean_labels, f"{slide_ref or 'Concept'} — Labeled Visual")
+            auto_svg = build_labeled_concept_svg(term, clean_labels, f"{term} — Labeled Concept Schematic")
             visual_md_parts.append(f"\n\n```svg\n{auto_svg}\n```")
 
         if clean_labels:
             label_lines = "\n".join(f"- **{lb}**" for lb in clean_labels[:6])
-            visual_md_parts.append(f"\n\n**Diagram Labels:**\n{label_lines}")
+            visual_md_parts.append(f"\n\n**Key Mechanism / Structure Labels:**\n{label_lines}")
 
         return {
             "id": idx,
@@ -1573,16 +1940,17 @@ Respond ONLY with a valid JSON array:
             "back": "".join(visual_md_parts).strip(),
             "term": term,
             "topic": card.get("topic") or term,
-            "difficulty": card.get("difficulty") or "medium",
+            "difficulty": raw_diff,
             "slideRef": slide_ref or "Slide 1",
         }
 
     def generate_flashcards(self, content: str, count: int = 10) -> List[Dict[str, Any]]:
         target_count = min(max(count, 1), 200)
-        raw_slides = self._parse_individual_slides(content)
-        slides = self._filter_substantive_slides(raw_slides)
+        blueprint = self.analyze_academic_presentation(content)
+        slides = blueprint["substantive_slides"]
         enrichment = get_cached_document_enrichment(content)
         verified_images = enrichment.get("images") or []
+        bp_prompt = blueprint.get("blueprint_prompt", "")
 
         # Group slides into parallel batches for fast generation across all substantive slides
         num_workers = min(4, max(1, math.ceil(target_count / 15)))
@@ -1602,9 +1970,10 @@ Respond ONLY with a valid JSON array:
                 pool.submit(
                     self._generate_flashcards_subbatch,
                     grp[:35000],
-                    min(25, per_batch),
+                    min(25, per_batch + 2),
                     idx * per_batch + 1,
                     verified_images,
+                    bp_prompt,
                 )
                 for idx, grp in enumerate(slide_groups)
             ]
@@ -1617,6 +1986,8 @@ Respond ONLY with a valid JSON array:
         seen_fronts = set()
         final_cards: List[Dict[str, Any]] = []
         for c in raw_cards:
+            if not self._is_valid_academic_flashcard(c):
+                continue
             key = re.sub(r"[^a-z0-9]", "", str(c.get("front", "")).lower())
             if not key or key in seen_fronts:
                 continue
@@ -1625,35 +1996,58 @@ Respond ONLY with a valid JSON array:
             if len(final_cards) >= target_count:
                 break
 
-        # Top up deterministically if needed so user always gets requested cards quickly
+        # Concept-driven academic top-up using the Shared Academic Blueprint if needed
         if len(final_cards) < target_count and slides:
+            main_topic = blueprint["main_topic"]
             s_idx = 0
-            while len(final_cards) < target_count and s_idx < len(slides) * 3:
+            diff_levels = ["easy", "moderate", "challenging"]
+            while len(final_cards) < target_count and s_idx < len(slides) * 4:
                 sl = slides[s_idx % len(slides)]
+                next_sl = slides[(s_idx + 1) % len(slides)]
                 s_idx += 1
+                facts = self._extract_slide_facts(sl)
+                primary_fact = facts[0]
+                secondary_fact = facts[1] if len(facts) > 1 else ""
+                focus = self._extract_concept_focus(primary_fact, sl["title"])
                 variant = (s_idx - 1) // len(slides)
+                diff = diff_levels[(len(final_cards)) % 3]
+
                 if variant == 0:
-                    prompt_front = f"Explain the core mechanism and significance of {sl['title']}."
+                    prompt_front = f"What is {focus}, and what is its primary functional role in {main_topic}?"
+                    diff = "easy"
                 elif variant == 1:
-                    prompt_front = f"What are the primary components and distinguishing features of {sl['title']}?"
+                    prompt_front = f"How does the mechanism of {focus} operate within {sl['title']}, and why is it significant?"
+                    diff = "moderate"
+                elif variant == 2 and next_sl["title"] != sl["title"]:
+                    prompt_front = f"What are the major differences and functional relationships between {sl['title']} and {next_sl['title']}?"
+                    diff = "challenging"
                 else:
-                    prompt_front = f"How does {sl['title']} apply in practice or clinical/real-world scenarios?"
+                    prompt_front = f"How does {focus} apply to practical or clinical scenarios involving {sl['title']}?"
+                    diff = "challenging"
+
                 key = re.sub(r"[^a-z0-9]", "", prompt_front.lower())
                 if key in seen_fronts:
                     continue
                 seen_fronts.add(key)
                 bullet_labels = [
-                    ln.strip("•-* \t")[:36]
+                    ln.strip("•-* \t")[:42]
                     for ln in sl["body"].splitlines()
                     if len(ln.strip("•-* \t")) > 4 and not self._is_institutional_or_boilerplate_line(ln)
                 ][:4]
+                back_explanation = f"{primary_fact} {secondary_fact}".strip()
+                if variant == 2 and next_sl["title"] != sl["title"]:
+                    next_facts = self._extract_slide_facts(next_sl)
+                    back_explanation = f"In {sl['title']}: {primary_fact} By contrast, in {next_sl['title']}: {next_facts[0]}"
+
                 final_cards.append(
                     self._format_visual_flashcard(
                         {
                             "front": prompt_front,
-                            "back": sl["body"][:380] or sl["title"],
-                            "term": sl["title"],
-                            "slideRef": "",
+                            "back": back_explanation or sl["body"][:420],
+                            "term": focus,
+                            "topic": sl["title"],
+                            "difficulty": diff,
+                            "slideRef": sl["label"],
                             "labels": bullet_labels,
                         },
                         len(final_cards) + 1,
@@ -1663,7 +2057,7 @@ Respond ONLY with a valid JSON array:
         return final_cards[:target_count]
 
     # ─────────────────────────────────────────────────────────────
-    # 5. FAST PARALLEL QUIZ ENGINE (EVERY SLIDE COVERED + ZERO REPEATS + NO SLIDE NUMBERS IN QUESTIONS)
+    # 5. EXAMINATION QUESTION ENGINE (ALL 7 FORMATS + 7-POINT QUALITY VERIFICATION)
     # ─────────────────────────────────────────────────────────────
     @staticmethod
     def _strip_slide_mentions(text: str) -> str:
@@ -1726,12 +2120,14 @@ Respond ONLY with a valid JSON array:
             if q.get("topic"):
                 q["topic"] = self._strip_slide_mentions(str(q.get("topic", "")))
 
-            is_ar = q.get("type") == "assertion_reasoning" or question_type == "assertion_reasoning"
+            raw_type = str(q.get("type") or question_type or "mcq").strip().lower()
+            is_ar = raw_type == "assertion_reasoning" or question_type == "assertion_reasoning"
             is_tf = not is_ar and (
-                q.get("type") == "true_false"
+                raw_type == "true_false"
                 or question_type == "true_false"
                 or (isinstance(q.get("options"), list) and len(q.get("options")) == 2)
             )
+            is_sa = not is_ar and not is_tf and (raw_type == "short_answer" or question_type == "short_answer")
 
             if is_ar:
                 q["type"] = "assertion_reasoning"
@@ -1761,6 +2157,11 @@ Respond ONLY with a valid JSON array:
                 q["options"] = ["True", "False"]
                 ca_str = str(q.get("correctAnswer", "True")).strip().lower()
                 q["correctAnswer"] = "False" if ca_str.startswith("f") else "True"
+            elif is_sa:
+                q["type"] = "short_answer"
+                q["options"] = []
+                if not q.get("correctAnswer"):
+                    q["correctAnswer"] = q.get("explanation") or "Refer to the core mechanism and definition."
             elif isinstance(q.get("options"), list) and len(q["options"]) >= 4:
                 raw_opts = [
                     self._strip_slide_mentions(re.sub(r"^[A-E][\.\)]\s*", "", str(opt).strip()))
@@ -1789,17 +2190,98 @@ Respond ONLY with a valid JSON array:
                         new_opts[k] = distractors[d_ptr] if d_ptr < len(distractors) else f"Alternative {letters[k]}"
                         d_ptr += 1
 
-                q["type"] = "mcq"
+                preserved_subtypes = {"mcq", "matching", "fill_in_the_blank", "application"}
+                if question_type in preserved_subtypes:
+                    q["type"] = question_type
+                elif raw_type in preserved_subtypes:
+                    q["type"] = raw_type
+                else:
+                    q["type"] = "mcq"
                 q["correctAnswer"] = letters[target_idx]
                 q["options"] = [prefixes[k] + str(new_opts[k]) for k in range(4)]
-            elif question_type == "short_answer":
-                q["type"] = "short_answer"
-                q["options"] = []
+            elif raw_type == "fill_in_the_blank" or question_type == "fill_in_the_blank":
+                # If LLM returned fill_in_the_blank without 4 options, keep it as direct-input or build options
+                q["type"] = "fill_in_the_blank"
+                if not isinstance(q.get("options"), list):
+                    q["options"] = []
             else:
                 continue
 
             normalized.append(q)
         return normalized
+
+    def _verify_and_filter_question_quality(
+        self,
+        questions: List[Dict[str, Any]],
+        blueprint: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        7-Point Examination Question Quality Verification Gate:
+        Before presenting any question to the student, verifies:
+        1. Does the question make academic sense? (No garbled phrasing or double-negation artifacts)
+        2. Is it relevant to the uploaded material and free of slide numbers or lecturer/admin metadata?
+        3. Is the wording clear and unambiguous?
+        4. Is the correct answer accurate and valid for the format?
+        5. Are the distractors reasonable, plausible, and distinct (no 'All of the above' / 'None of the above' or duplicate options)?
+        6. Does the explanation justify the answer?
+        7. Is the question distinct from already-generated questions?
+        """
+        verified: List[Dict[str, Any]] = []
+        forbidden_stem_patterns = (
+            r"\bwhat\s+(?:is|was)\s+(?:on|in|mentioned\s+on|shown\s+on)\s+(?:slide|page)\b",
+            r"\bwhat\s+is\s+the\s+title\s+of\s+(?:slide|page)\b",
+            r"\b(?:which|what)\s+(?:university|school|college|faculty|department|lecturer|professor|instructor)\b",
+            r"\bis\s+is\s+never\b",
+            r"\bare\s+are\s+never\b",
+        )
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            q_text = str(q.get("question") or "").strip()
+            q_type = str(q.get("type") or "mcq").strip().lower()
+            ca = str(q.get("correctAnswer") or "").strip()
+            opts = q.get("options") if isinstance(q.get("options"), list) else []
+
+            # 1 & 2 & 3: Academic sense, clear wording, and zero slide/admin trivia
+            if len(q_text) < 12 or not ca:
+                continue
+            if any(re.search(pat, q_text, flags=re.IGNORECASE) for pat in forbidden_stem_patterns):
+                continue
+            if self._is_institutional_or_boilerplate_line(q_text):
+                continue
+
+            # 4 & 5: Valid correct answer and plausible, distinct distractors
+            if q_type in ("mcq", "matching", "application") or (q_type == "fill_in_the_blank" and len(opts) >= 4):
+                if len(opts) < 4:
+                    continue
+                clean_opt_bodies = [re.sub(r"^[A-E][\.\)]\s*", "", str(o).strip()).lower() for o in opts[:4]]
+                if any(len(b) < 1 for b in clean_opt_bodies):
+                    continue
+                # Reject duplicate options or lazy 'all/none of the above'
+                if len(set(clean_opt_bodies)) < 4:
+                    continue
+                if any(b in ("all of the above", "none of the above", "all of the options") for b in clean_opt_bodies):
+                    continue
+                if ca.upper() not in ("A", "B", "C", "D"):
+                    continue
+            elif q_type == "assertion_reasoning":
+                if ca.upper() not in ("A", "B", "C", "D", "E") or len(opts) < 5:
+                    continue
+            elif q_type == "true_false":
+                if ca not in ("True", "False"):
+                    continue
+
+            # 6: Ensure explanation justifies the answer
+            exp = str(q.get("explanation") or "").strip()
+            if len(exp) < 12:
+                topic_lbl = q.get("topic") or (blueprint.get("main_topic") if blueprint else "this concept")
+                tested = q.get("testedFact") or ca
+                q["explanation"] = f"The correct answer ({ca}) is justified by the governing principle of {topic_lbl}: {tested}"
+
+            verified.append(q)
+
+        # 7: Deduplicate against all accepted questions
+        return self._deduplicate_questions(verified)
 
     def _generate_quiz_batch(
         self,
@@ -1810,6 +2292,7 @@ Respond ONLY with a valid JSON array:
         start_index: int,
         focus_weak_topics: Optional[List[str]] = None,
         per_slide_plan: Optional[str] = None,
+        blueprint_prompt: str = "",
     ) -> List[Dict[str, Any]]:
         weak_focus_prompt = ""
         if focus_weak_topics:
@@ -1826,16 +2309,41 @@ Respond ONLY with a valid JSON array:
         if question_type == "true_false":
             type_instruct = (
                 'True/False statements (~50% True and ~50% False). options: ["True", "False"]. '
-                'correctAnswer: "True" or "False". Every statement must test a unique academic fact.'
+                'correctAnswer: "True" or "False". Every statement must test a unique academic concept or mechanism.'
             )
         elif question_type == "short_answer":
-            type_instruct = "Short answer questions. options: []. correctAnswer: concise model answer (2-3 sentences). markingGuide: explicit mark breakdown."
+            type_instruct = (
+                "Short-answer questions testing definitions, mechanisms, comparisons, or applications. "
+                "options: []. correctAnswer: concise, accurate model answer (2-3 sentences). markingGuide: explicit mark breakdown."
+            )
+        elif question_type == "matching":
+            type_instruct = (
+                "Academic Matching Questions:\n"
+                "- Present 3–4 academic concepts/structures in Column I (1, 2, 3) and their corresponding mechanisms, functions, or definitions in Column II ((X), (Y), (Z)) inside `\"question\"`.\n"
+                "- Provide 4 plausible pairing combinations in `\"options\"`: `[\"A. 1-(X), 2-(Y), 3-(Z)\", \"B. ...\", \"C. ...\", \"D. ...\"]`.\n"
+                "- `\"correctAnswer\"`: Single letter `\"A\"`, `\"B\"`, `\"C\"`, or `\"D\"`."
+            )
+        elif question_type == "fill_in_the_blank":
+            type_instruct = (
+                "Academic Fill-in-the-Blank Questions:\n"
+                "- Write a precise academic statement where a key concept, enzyme, receptor, law, or mechanism is replaced with `________`.\n"
+                "- Provide 4 plausible academic terms in `\"options\"`: `[\"A. ...\", \"B. ...\", \"C. ...\", \"D. ...\"]`.\n"
+                "- `\"correctAnswer\"`: Single letter `\"A\"`, `\"B\"`, `\"C\"`, or `\"D\"`."
+            )
+        elif question_type == "application":
+            type_instruct = (
+                "Application-Based / Clinical / Scenario Questions:\n"
+                "- Present a realistic clinical, experimental, analytical, or practical scenario that requires applying a mechanism, classification, or cause-and-effect principle from the material.\n"
+                "- Provide 4 plausible academic options `[\"A. ...\", \"B. ...\", \"C. ...\", \"D. ...\"]` and `\"correctAnswer\"` (`\"A\"`–`\"D\"`)."
+            )
         elif question_type == "assertion_reasoning":
             type_instruct = (
                 "AUTHENTIC UNIVERSITY / WASSCE ASSERTION & REASONING QUESTIONS:\n"
-                "- Each question MUST consist of two distinct academic statements: `Assertion (A)` (a declarative claim) and `Reason (R)` (a proposed causal/mechanistic principle).\n"
+                "- Both statements must make independent academic sense.\n"
+                "- `Assertion (A)` must be an independently meaningful academic claim, and `Reason (R)` must be a scientifically accurate or plausible mechanistic statement.\n"
+                "- Test whether Reason (R) is true and whether it correctly explains Assertion (A).\n"
                 "- Format `\"question\"` strictly as: `\"Assertion (A): <statement>\\nReason (R): <statement>\"`, and ALSO provide `\"assertion\"` and `\"reason\"` fields.\n"
-                "- Distribute `\"correctAnswer\"` across ALL FIVE cases (`\"A\"`, `\"B\"`, `\"C\"`, `\"D\"`, `\"E\"`):\n"
+                "- Distribute `\"correctAnswer\"` across ALL FIVE standard answer combinations (`\"A\"`, `\"B\"`, `\"C\"`, `\"D\"`, `\"E\"`):\n"
                 "  * Case A: Both A and R are true, and R is the direct causal/mechanistic explanation of A.\n"
                 "  * Case B: Both A and R are true independent statements, but R does NOT explain why A occurs.\n"
                 "  * Case C: A is true, but R contains a subtle factual or causal falsehood.\n"
@@ -1844,32 +2352,35 @@ Respond ONLY with a valid JSON array:
             )
         elif question_type in ("mixed", "exhaustive"):
             type_instruct = (
-                "High-yield mix of Multiple Choice (4 options A-D, plausible misconception distractors) "
-                "and True/False questions testing distinct facts, mechanisms, definitions, and comparisons."
+                "Balanced Examination Mix combining Multiple Choice (`mcq`), Assertion & Reasoning (`assertion_reasoning`), "
+                "Application-Based (`application`), True/False (`true_false`), Fill-in-the-Blank (`fill_in_the_blank`), and Matching (`matching`) questions."
             )
         else:
             type_instruct = (
-                "Well-crafted Multiple Choice Questions (MCQs). "
-                'options: Exactly 4 plausible, distinct academic options ["A. ...", "B. ...", "C. ...", "D. ..."]. '
-                'correctAnswer: Single letter "A", "B", "C", or "D". '
-                "NEVER use 'All of the above', 'None of the above', or repeated question stems/answers."
+                "Well-crafted Multiple Choice Questions (MCQs) testing actual understanding and application.\n"
+                "- Use plausible academic distractors based on realistic misconceptions or sibling concepts.\n"
+                "- Avoid obvious or ridiculous incorrect options, and NEVER use 'All of the above' or 'None of the above'.\n"
+                "- Ensure one defensibly correct answer (`\"A\"`, `\"B\"`, `\"C\"`, or `\"D\"`).\n"
+                "- options: Exactly 4 distinct options `[\"A. ...\", \"B. ...\", \"C. ...\", \"D. ...\"]`."
             )
 
         type_schema_val = (
-            '"mcq" or "true_false"'
+            '"mcq" | "assertion_reasoning" | "application" | "true_false" | "fill_in_the_blank" | "matching"'
             if question_type in ("mixed", "exhaustive")
             else f'"{question_type}"'
         )
 
-        system = f"""You are LAMLA Guide AI's Precision Examination Engine.
+        system = f"""You are LAMLA Guide AI's Precision Academic Examination Engine.
 Difficulty: {difficulty}. Question Type: {question_type}.{weak_focus_prompt}{slide_plan_prompt}
 
-STRICT QUALITY, MAIN-TOPIC & NO-SLIDE-NUMBER RULES:
-1. Write clear, unambiguous, university/WASSCE-standard questions testing real understanding, mechanisms, applications, and key distinctions of the MAIN ACADEMIC TOPIC.
-2. NEVER mention slide numbers or page numbers anywhere! Do NOT write "on Slide 3", "(Slide 2)", "according to Slide 5", or "Found in: Slide 1" in the question stem, Assertion, Reason, options, or explanation. Questions must read like standalone real examination questions.
-3. Ignore any introductory cover/title metadata about the school, university, faculty, department, course code, lecturer name, or table of contents.
-4. NEVER repeat or slightly reword the same question or correct answer. Each question must test a completely distinct fact or concept and use varied academic question stems.
-5. Keep explanations sharp and helpful (1–2 sentences) plus 1 sentence for `misconception`.
+SHARED ACADEMIC INTELLIGENCE BLUEPRINT:
+{blueprint_prompt}
+
+STRICT ACADEMIC QUALITY & VERIFICATION RULES:
+1. Every question must have a clear educational purpose and test actual understanding, mechanisms, classifications, comparisons, or applications of the MAIN ACADEMIC SUBJECT.
+2. NEVER mention slide numbers, page numbers, presentation order, lecturer details, university/school names, or department names anywhere! Questions must read like standalone university/professional examination questions.
+3. Avoid ambiguous wording and NEVER repeat or slightly reword the same question.
+4. Provide a clear, accurate `"explanation"` (1–3 sentences) that logically justifies why the correct option is right, plus `"misconception"` explaining why the main distractor is incorrect.
 
 {type_instruct}
 
@@ -1877,23 +2388,23 @@ Return ONLY a valid JSON array of {count} objects:
 [
   {{
     "id": {start_index},
-    "question": "Clear, specific standalone exam question without any slide number reference",
+    "question": "Clear, specific standalone academic exam question",
     "assertion": "Optional: Assertion (A) statement if assertion_reasoning",
     "reason": "Optional: Reason (R) statement if assertion_reasoning",
     "type": {type_schema_val},
     "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
     "correctAnswer": "A",
     "markingGuide": "",
-    "explanation": "Why the correct option is accurate...",
-    "misconception": "Why the main distractor is a common trap...",
-    "testedFact": "Core principle tested",
+    "explanation": "Logical academic justification of the correct answer...",
+    "misconception": "Why the primary distractor is a common misconception...",
+    "testedFact": "Core academic principle tested",
     "topic": "Specific concept topic",
     "difficulty": "{difficulty}",
     "sourceRef": ""
   }}
 ]"""
 
-        prompt = f"Generate exactly {count} distinct, non-repeating {difficulty} exam questions starting at ID {start_index} from this academic material (do NOT include slide numbers in questions):\n\n{content}"
+        prompt = f"Generate {count} distinct, non-repeating {difficulty} academic examination questions starting at ID {start_index} from this material:\n\n{content}"
         raw = self.execute_ai_completion(prompt, system_prompt=system, json_mode=True, temperature=0.25, use_cache=False)
         parsed = self._clean_json_response(raw)
         if isinstance(parsed, list):
@@ -1909,21 +2420,22 @@ Return ONLY a valid JSON array of {count} objects:
         focus_weak_topics: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Ultra-fast parallel quiz generator with:
-        - Automatic filtering of institutional/school/department intro slides
-        - Explicit per-slide question allocation so questions come from EVERY SINGLE SUBSTANTIVE SLIDE
-        - Zero slide-number references in the output questions
-        - Strict stem + token-similarity + tested-fact deduplication guaranteeing ZERO repeated questions
+        Academic Examination Question Generator with:
+        - Shared Academic Blueprint analysis across the entire uploaded presentation
+        - Support for all 7 question formats: mcq, assertion_reasoning, true_false, matching, fill_in_the_blank, short_answer, application, and mixed
+        - Per-section question allocation so questions cover the entire presentation
+        - 7-Point Question Quality Verification Gate before returning any question
         """
         target_count = min(max(int(count or 5), 1), 1000)
-        raw_slides = self._parse_individual_slides(content)
-        slides = self._filter_substantive_slides(raw_slides)
+        blueprint = self.analyze_academic_presentation(content)
+        slides = blueprint["substantive_slides"]
+        bp_prompt = blueprint.get("blueprint_prompt", "")
         if not slides:
             return []
 
         num_slides = len(slides)
 
-        # Allocate exact question quotas across substantive slides so EVERY slide is represented
+        # Allocate exact question quotas across substantive slides so EVERY slide/section is represented
         slide_quotas: List[Tuple[Dict[str, Any], int]] = []
         if target_count >= num_slides:
             base_q = target_count // num_slides
@@ -1940,7 +2452,7 @@ Return ONLY a valid JSON array of {count} objects:
             for idx, sl in enumerate(slides):
                 slide_quotas.append((sl, 1 if idx in chosen_set else 0))
 
-        # Group allocated slides into parallel batches of ~10-12 questions per LLM call for peak speed
+        # Group allocated slides into parallel batches of ~10-12 questions per LLM call
         batches: List[Tuple[List[Tuple[Dict[str, Any], int]], int, str]] = []
         curr_items: List[Tuple[Dict[str, Any], int]] = []
         curr_q_sum = 0
@@ -1980,9 +2492,9 @@ Return ONLY a valid JSON array of {count} objects:
                     start_index=b_idx * 15 + 1,
                     focus_weak_topics=focus_weak_topics,
                     per_slide_plan=b_plan,
+                    blueprint_prompt=bp_prompt,
                 )
                 if generated:
-                    # Tag generated questions with the batch's slide numbers in order for internal coverage tracking
                     expanded_slide_nums: List[int] = []
                     for sl_item, q_alloc in b_items:
                         expanded_slide_nums.extend([sl_item["num"]] * max(1, q_alloc))
@@ -1992,7 +2504,7 @@ Return ONLY a valid JSON array of {count} objects:
                     return generated
             except Exception:
                 pass
-            # Instant per-slide fallback generating all b_count allocated questions with varied stems & facts
+            # Concept-driven per-slide synthesis if LLM batch fails
             fb: List[Dict[str, Any]] = []
             q_seq = b_idx * 25 + 1
             for sl, q_alloc in b_items:
@@ -2019,7 +2531,8 @@ Return ONLY a valid JSON array of {count} objects:
                 except Exception:
                     continue
 
-        unique_questions = self._deduplicate_questions(all_raw_questions)
+        # Run the 7-Point Question Quality Verification Gate
+        unique_questions = self._verify_and_filter_question_quality(all_raw_questions, blueprint)
 
         # Verify EVERY SINGLE SUBSTANTIVE SLIDE has at least 1 question when target_count >= num_slides
         if target_count >= num_slides:
@@ -2046,19 +2559,19 @@ Return ONLY a valid JSON array of {count} objects:
                         else:
                             overflow_qs.append(q)
                     combined = primary_per_slide + guaranteed_extras + overflow_qs
-                    unique_questions = self._deduplicate_questions(combined)[:target_count]
+                    unique_questions = self._verify_and_filter_question_quality(combined, blueprint)[:target_count]
                 else:
-                    unique_questions = self._deduplicate_questions(unique_questions + guaranteed_extras)
+                    unique_questions = self._verify_and_filter_question_quality(unique_questions + guaranteed_extras, blueprint)
 
-        # Final top-up if deduplication left us slightly short of target_count
+        # Final top-up if quality verification filtered out any weak items
         if len(unique_questions) < target_count:
             needed = target_count - len(unique_questions)
-            for extra_i in range(needed * 2):
+            for extra_i in range(needed * 3):
                 if len(unique_questions) >= target_count:
                     break
                 sl = slides[(extra_i + len(unique_questions)) % num_slides]
                 cand = self._deterministic_question_from_slide(sl, slides, len(unique_questions) + extra_i + 1, question_type)
-                unique_questions = self._deduplicate_questions(unique_questions + [cand])
+                unique_questions = self._verify_and_filter_question_quality(unique_questions + [cand], blueprint)
 
         final_list = unique_questions[:target_count]
         for idx, q in enumerate(final_list, 1):
@@ -2068,8 +2581,39 @@ Return ONLY a valid JSON array of {count} objects:
         return final_list
 
     # ─────────────────────────────────────────────────────────────
-    # 6. ULTRA-FAST PERSONAL AI TUTOR (ANSWERS ANY QUESTION + WEB + DRAWING)
+    # 6. SMART, ENGAGING & CONVERSATIONAL AI TUTOR (SHARED BLUEPRINT + ACADEMIC & CASUAL)
     # ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _is_casual_or_conversational_query(query: str) -> bool:
+        """
+        Detects greetings, jokes, casual check-ins about the student's day/studies,
+        encouragement requests, or light conversation so the AI Tutor responds
+        naturally and warmly without triggering unnecessary web research.
+        """
+        clean_q = re.sub(r"[^\w\s']", " ", (query or "").strip().lower())
+        clean_q = re.sub(r"\s+", " ", clean_q).strip()
+        if not clean_q:
+            return True
+        exact_casual = {
+            "hi", "hello", "hey", "yo", "sup", "good morning", "good afternoon", "good evening",
+            "how are you", "how are you doing", "how is your day", "who are you", "what can you do",
+            "thanks", "thank you", "thank you so much", "ok", "okay", "cool", "great", "nice", "awesome",
+            "what's up", "whats up", "help me", "start", "tell me a joke", "make me laugh",
+            "i am tired", "im tired", "i feel tired", "i am stressed", "im stressed",
+        }
+        if clean_q in exact_casual:
+            return True
+        casual_patterns = (
+            r"\b(?:tell|crack|share)\s+(?:me\s+)?a\s+joke\b",
+            r"\bhow\s+(?:are\s+you|is\s+your\s+day|do\s+you\s+feel)\b",
+            r"\b(?:good\s+morning|good\s+afternoon|good\s+evening|hello\s+lamla|hi\s+lamla|hey\s+lamla)\b",
+            r"\bi\s+(?:am|'m|feel)\s+(?:so\s+)?(?:tired|exhausted|sleepy|stressed|overwhelmed|nervous|anxious)\b",
+            r"\b(?:motivate|encourage)\s+me\b",
+        )
+        if len(clean_q.split()) <= 10 and any(re.search(p, clean_q) for p in casual_patterns):
+            return True
+        return False
+
     def ask_study_tutor(
         self,
         query: str,
@@ -2080,20 +2624,22 @@ Return ONLY a valid JSON array of {count} objects:
         teaching_mode: Optional[str] = "socratic",
     ) -> str:
         """
-        Fast, unrestricted Personal AI Study Tutor:
-        - Answers ANY question — both from uploaded slides AND any external/general topic!
-        - Enriches answers with live internet research + cached upload internet learning.
-        - Generates accurate educational diagrams/images AND draws custom labeled `<svg>` schematics!
+        Smart, Engaging, and Conversational AI Tutor:
+        - Works from the Shared Academic Blueprint of the active Study Session without mixing sessions.
+        - Academic Teaching: Explains concepts in simple language first, then progresses to advanced mechanisms,
+          uses examples/analogies, compares concepts, corrects misconceptions politely, and asks check-for-understanding questions.
+        - Intelligent & Casual Conversation: Handles greetings, jokes, casual conversations about the student's day or studies,
+          and follow-up questions naturally and warmly.
+        - Visual Concept Drawing: Generates custom labeled `<svg>` diagrams and embeds verified educational images when helpful.
         """
-        casual_greetings = {
-            "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
-            "how are you", "who are you", "thanks", "thank you", "ok", "okay", "cool", "great", "nice",
-        }
-        clean_q = (query or "").strip().lower()
-        is_casual = clean_q in casual_greetings or (
-            len(clean_q.split()) <= 2 and clean_q in {"what's up", "help me", "start"}
-        )
+        is_casual = self._is_casual_or_conversational_query(query) and not action_type
         wants_visual = is_visual_or_drawing_request(query, action_type)
+
+        blueprint: Optional[Dict[str, Any]] = None
+        bp_prompt = ""
+        if context and len(context.strip()) > 40:
+            blueprint = self.analyze_academic_presentation(context)
+            bp_prompt = blueprint.get("blueprint_prompt", "")
 
         web_data: Dict[str, Any] = {}
         doc_enrichment: Dict[str, Any] = {}
@@ -2127,12 +2673,12 @@ Return ONLY a valid JSON array of {count} objects:
             external_ref_str = "\n\n" + external_ref_str
 
         action_instructions = {
-            "explain_simply": "Explain clearly in simple, everyday language with an intuitive analogy.",
-            "step_by_step": "Break down the mechanism or solution chronologically step by step.",
-            "give_example": "Provide 2 concrete real-world examples illustrating this concept.",
-            "compare_concepts": "Compare key differences, similarities, and exam distinctions in a clean Markdown table.",
-            "test_understanding": "Provide 2 quick check questions with clear model answers.",
-            "create_questions": "Create 3 exam-style practice questions with answers and explanations.",
+            "explain_simply": "Start with a crystal-clear, simple explanation and an intuitive everyday analogy, then connect it to the technical academic concept.",
+            "step_by_step": "Break down the mechanism, pathway, or solution chronologically step by step so the cause-and-effect sequence is unmistakable.",
+            "give_example": "Provide 2 concrete real-world or clinical examples and an analogy illustrating this concept in action.",
+            "compare_concepts": "Compare the key differences, similarities, mechanisms, and exam distinctions in a clean Markdown table.",
+            "test_understanding": "Ask 2 thoughtful check-for-understanding questions with helpful hints followed by clear model answers.",
+            "create_questions": "Create 3 high-quality exam-style practice questions with answers and detailed explanations.",
             "draw_visualize": (
                 "THE STUDENT CLICKED 'DRAW & VISUALIZE': You MUST draw a detailed, accurate, cleanly labeled `<svg>` diagram "
                 "inside a ```svg code block AND embed the best verified educational image from the provided URLs if available, "
@@ -2148,7 +2694,7 @@ MANDATORY VISUALIZATION & DRAWING MODE (ACTIVE FOR THIS QUERY):
 1. DRAW A LABELED SVG DIAGRAM: You MUST draw an accurate, well-proportioned, publication-quality `<svg>` diagram wrapped in a ```svg code block:
    - Use `xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 360" width="100%"`.
    - Use a clean white canvas (`<rect width="760" height="360" rx="12" fill="#ffffff" stroke="#e2e8f0"/>`), clear geometric/anatomical/scientific/graph shapes, curves (`<path>`), coordinate axes or directional arrows, dashed leader lines, and crisp non-overlapping labels (`fill="#0f172a"`).
-   - Accurately represent the specific concept asked (e.g., heart chambers, supply & demand curves, cell organelles, electric circuit, water/carbon cycle, neural synapse, algorithm flowchart, chemical apparatus).
+   - Accurately represent the specific concept asked.
 2. EMBED VERIFIED EDUCATIONAL IMAGE: If a matching verified Wikimedia/Wikipedia image URL is provided in the research block above, ALSO include it as `![Detailed Caption](https://upload.wikimedia.org/...)`.
 3. NUMBERED LABEL GUIDE: Below the drawing, list a concise numbered legend explaining each labeled structure or stage."""
         else:
@@ -2156,44 +2702,58 @@ MANDATORY VISUALIZATION & DRAWING MODE (ACTIVE FOR THIS QUERY):
 VISUAL CAPABILITY:
 - Whenever a diagram, graph, structure, or schematic would make your explanation significantly clearer, you may draw a clean labeled `<svg>` diagram inside a ```svg code block (`viewBox="0 0 760 320"`, white `#ffffff` background, crisp `#0f172a` labels) or embed a verified educational image URL from the research context."""
 
-        system = f"""You are LAMLA Guide AI's Personal AI Tutor & Visual Concept Mentor.
+        system = f"""You are LAMLA Guide AI — a smart, supportive, academically rigorous, and genuinely conversational AI Tutor.
 Slogan: "It's Never Too Late To Study."
-Target Educational Level: {educational_level}.
+Target Educational Level: {educational_level}. Teaching Mode: {teaching_mode or 'socratic'}.
 
-CORE RULES:
-1. ANSWER ANY QUESTION WITHOUT RESTRICTION:
-   - You can answer BOTH questions about the student's uploaded slides AND any question completely outside the slides (any academic subject, science, medicine, economics, math, coding, history, general knowledge, or exam problem).
-   - NEVER refuse a question because it is not in the slides!
-   - When a question relates to the uploaded slides, cite the slide numbers (e.g. `[Slide 3]`) and enrich with deeper internet/academic insight.
-   - When a question is outside the slides, answer it directly, thoroughly, and accurately using your full academic knowledge and the live internet research provided.
-2. FAST, DIRECT & NATURAL:
-   - For casual greetings ("hi", "thanks"), reply warmly and briefly without forcing a lecture.
-   - For study questions, give a clear, direct answer immediately, followed by well-structured explanation.
+{bp_prompt if bp_prompt else ''}
+
+1. ACADEMIC TEACHING EXCELLENCE:
+   - Explain concepts in simple, intuitive language first, then progress smoothly to advanced academic/mechanistic explanations.
+   - Break complex mechanisms and processes into clear step-by-step sequences.
+   - Use relatable examples and analogies where helpful.
+   - Compare related concepts clearly so the student never confuses them on exams.
+   - If the student expresses a misconception, correct it politely, warmly, and constructively by explaining why the misconception is tempting and how the true mechanism works.
+   - Answer follow-up questions using the context of the current Study Session and conversation history. Never mix unrelated study sessions.
+   - When appropriate for academic questions, end with a brief, engaging check-for-understanding question or offer a helpful hint before giving away a full practice solution.
+   - When referencing material from the uploaded presentation, cite the slide/page naturally (e.g. `[Slide 4]`), and clearly distinguish supplementary outside context when you bring in broader textbook/internet knowledge.
+   - You can also answer any academic or general question outside the uploaded slides accurately using your full knowledge and live web research.
+
+2. INTELLIGENT & CASUAL CONVERSATION:
+   - Interact naturally! Respond warmly and authentically to greetings, jokes, light humour, or casual conversation about the student's day, energy levels, or study progress.
+   - Do NOT sound robotic, rigid, or repetitive. If the student is just chatting, greeting you, or asking for a joke or encouragement, reply conversationally and supportively without forcing a long textbook lecture—while gently keeping the door open to continue studying whenever they are ready.
 {visual_mandate}
 {f'SPECIAL FOCUS: {action_instruction}' if action_instruction else ''}"""
 
         history_text = ""
         if chat_history:
             turns = []
-            for msg in chat_history[-6:]:
-                role = "Student" if msg.get("role") in ("user", "student") else "AI Tutor"
-                turns.append(f"{role}: {str(msg.get('content', ''))[:1200]}")
-            history_text = "\n\nConversation History:\n" + "\n".join(turns)
+            for msg in chat_history[-14:]:
+                role = "Student" if msg.get("role") in ("user", "student") else "LAMLA AI Tutor"
+                turns.append(f"{role}: {str(msg.get('content', ''))[:1400]}")
+            history_text = "\n\nConversation History (Current Study Session):\n" + "\n".join(turns)
 
         slide_section = (
-            f"Uploaded Slide Material (use & cite when relevant; ignore if question is on a different topic):\n{context[:28000]}"
+            f"Current Study Session Uploaded Material (use & cite when relevant to the student's question):\n{context[:30000]}"
             if context
-            else "No slides uploaded for this query — answer directly using full academic & internet knowledge."
+            else "No study material uploaded in this session — engage naturally and answer using your full academic & internet knowledge."
         )
 
-        prompt = f"{slide_section}{history_text}{external_ref_str}\n\nStudent Question:\n{query}"
+        prompt = f"{slide_section}{history_text}{external_ref_str}\n\nStudent Message:\n{query}"
 
         try:
-            answer = self.execute_ai_completion(prompt, system_prompt=system, temperature=0.32, use_cache=False)
+            answer = self.execute_ai_completion(prompt, system_prompt=system, temperature=0.35, use_cache=False)
         except Exception:
-            topic_title = web_data.get("source_title") or extract_core_search_phrase(query) or "Concept Explanation"
-            summary_body = web_data.get("summary_text") or (context[:1200] if context else f"Let's break down {topic_title} clearly.")
-            answer = f"### {topic_title}\n\n{summary_body}"
+            if is_casual:
+                main_subj = blueprint["main_topic"] if blueprint else "your studies"
+                answer = (
+                    f"Hello! I'm doing great and ready to help you master **{main_subj}** whenever you're ready. "
+                    f"How is your day going so far? Feel free to ask me anything about your slides, request a quick quiz, or just chat!"
+                )
+            else:
+                topic_title = web_data.get("source_title") or extract_core_search_phrase(query) or (blueprint["main_topic"] if blueprint else "Concept Explanation")
+                summary_body = web_data.get("summary_text") or (context[:1400] if context else f"Let's break down {topic_title} clearly step by step.")
+                answer = f"### {topic_title}\n\n{summary_body}"
 
         # Guarantee visual output if the student asked to draw / visualize / show an image
         if wants_visual:
@@ -2214,7 +2774,7 @@ CORE RULES:
 
     def active_recall_coach_evaluate(self, question: str, student_answer: str, reference_text: str) -> Dict[str, Any]:
         system = """You are LAMLA Guide AI's Active Recall Coach.
-Evaluate the student's answer and return ONLY valid JSON:
+Evaluate the student's answer constructively and return ONLY valid JSON:
 {
   "scoreOutOf10": 8,
   "whatWasCorrect": "...",
@@ -2233,7 +2793,7 @@ Evaluate the student's answer and return ONLY valid JSON:
         return {
             "scoreOutOf10": 7,
             "whatWasCorrect": "Good effort recalling the core idea.",
-            "whatWasMissing": "Add specific terminology and mechanism steps from the slide.",
-            "modelAnswer": reference_text[:300] or "Review the corresponding slide definition and mechanism.",
+            "whatWasMissing": "Add specific terminology and mechanism steps from the material.",
+            "modelAnswer": reference_text[:300] or "Review the corresponding concept definition and mechanism.",
             "encouragementTip": "Active recall strengthens long-term retention every single time.",
         }

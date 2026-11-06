@@ -143,7 +143,7 @@ export async function callGemini(
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(7000),
+          signal: AbortSignal.timeout(22000),
         });
 
         if (!response.ok) {
@@ -156,7 +156,7 @@ export async function callGemini(
             break;
           }
           if (response.status === 429) {
-            keyCooldownUntil.set(apiKey, Date.now() + 90 * 1000);
+            keyCooldownUntil.set(apiKey, Date.now() + 60 * 1000);
             break;
           }
           break;
@@ -169,13 +169,13 @@ export async function callGemini(
           return text;
         }
       } catch {
-        keyCooldownUntil.set(apiKey, Date.now() + 60 * 1000);
+        keyCooldownUntil.set(apiKey, Date.now() + 20 * 1000);
         break;
       }
     }
   }
 
-  // Zero-credit-exhaustion cloud fallback for text prompts with strict 4s timeout & cooldown memory
+  // Zero-credit-exhaustion cloud fallback for text prompts with 20s timeout & short 15s cooldown
   if (typeof promptOrParts === "string" && Date.now() >= freeCloudCooldownUntil) {
     try {
       const sys =
@@ -190,14 +190,14 @@ export async function callGemini(
           model: "openai",
           messages: [
             { role: "system", content: sys },
-            { role: "user", content: promptOrParts.slice(0, 18000) },
+            { role: "user", content: promptOrParts.slice(0, 22000) },
           ],
           temperature: options.temperature ?? 0.3,
           ...(options.responseMimeType === "application/json"
             ? { response_format: { type: "json_object" } }
             : {}),
         }),
-        signal: AbortSignal.timeout(4000),
+        signal: AbortSignal.timeout(20000),
       });
       if (fbRes.ok) {
         const rawText = (await fbRes.text()).trim();
@@ -212,9 +212,9 @@ export async function callGemini(
         }
         if (rawText && rawText.length > 10) return rawText;
       }
-      freeCloudCooldownUntil = Date.now() + 5 * 60 * 1000;
+      freeCloudCooldownUntil = Date.now() + 15 * 1000;
     } catch {
-      freeCloudCooldownUntil = Date.now() + 5 * 60 * 1000;
+      freeCloudCooldownUntil = Date.now() + 15 * 1000;
     }
   }
 
@@ -750,6 +750,7 @@ function buildDeterministicQuestionFromSlide(
     facts.length > 1
       ? facts[qIndex % facts.length]
       : allSlides[qIndex % allSlides.length]?.facts[0] || primaryFact;
+  const conceptFocus = extractConceptFocusFromFact(primaryFact, slide.title);
 
   const otherFacts: string[] = [];
   for (let offset = 1; offset < allSlides.length + 4; offset++) {
@@ -768,7 +769,7 @@ function buildDeterministicQuestionFromSlide(
 
   let effectiveType = questionType;
   if (questionType === "mixed" || questionType === "exhaustive") {
-    const cycle = ["mcq", "mcq", "true_false", "assertion_reasoning", "mcq"];
+    const cycle = ["mcq", "assertion_reasoning", "application", "true_false", "fill_in_the_blank", "matching", "mcq"];
     effectiveType = cycle[(qIndex - 1) % cycle.length];
   }
 
@@ -779,7 +780,7 @@ function buildDeterministicQuestionFromSlide(
       : invertFactToPlausibleMisconception(primaryFact, slide.title, qIndex);
     return {
       id: qIndex,
-      question: `Regarding ${slide.title}: ${statement}`,
+      question: `Evaluate the accuracy of this statement regarding ${conceptFocus}: ${statement}`,
       type: "true_false",
       options: ["True", "False"],
       correctAnswer: isTrue ? "True" : "False",
@@ -794,11 +795,93 @@ function buildDeterministicQuestionFromSlide(
     };
   }
 
+  if (effectiveType === "matching") {
+    const pairs: Array<[string, string]> = [[conceptFocus, primaryFact.slice(0, 110)]];
+    for (let i = 0; i < allSlides.length && pairs.length < 3; i++) {
+      const other = allSlides[(slide.num + i) % allSlides.length];
+      if (other.num !== slide.num && other.facts[0]) {
+        const term = extractConceptFocusFromFact(other.facts[0], other.title);
+        if (!pairs.some((p) => p[0].toLowerCase() === term.toLowerCase())) {
+          pairs.push([term, other.facts[0].slice(0, 110)]);
+        }
+      }
+    }
+    while (pairs.length < 3) {
+      pairs.push([`${slide.title} Principle ${pairs.length + 1}`, secondaryFact.slice(0, 110)]);
+    }
+    const colA = pairs.map((p, idx) => `  ${idx + 1}. ${p[0]}`).join("\n");
+    const colB = pairs.map((p, idx) => `  (${String.fromCharCode(88 + idx)}) ${p[1]}`).join("\n");
+    const letters = ["A", "B", "C", "D"];
+    const targetIdx = (qIndex - 1) % 4;
+    const correctCombo = "1-(X), 2-(Y), 3-(Z)";
+    const wrongCombos = ["1-(Y), 2-(X), 3-(Z)", "1-(Z), 2-(Y), 3-(X)", "1-(X), 2-(Z), 3-(Y)"];
+    const opts: string[] = [];
+    let wIdx = 0;
+    for (let i = 0; i < 4; i++) {
+      opts.push(`${letters[i]}. ${i === targetIdx ? correctCombo : wrongCombos[wIdx++]}`);
+    }
+    return {
+      id: qIndex,
+      question: `Match each academic concept in Column I with its corresponding mechanism or description in Column II:\nColumn I:\n${colA}\nColumn II:\n${colB}`,
+      type: "matching",
+      options: opts,
+      correctAnswer: letters[targetIdx],
+      explanation: `The accurate pairings are 1-(X) [${pairs[0][0]}], 2-(Y) [${pairs[1][0]}], and 3-(Z) [${pairs[2][0]}].`,
+      misconception: "Match each concept to its specific governing mechanism rather than a sibling topic's function.",
+      testedFact: primaryFact,
+      topic: slide.title,
+      difficulty: "intermediate",
+      sourceRef: "",
+    };
+  }
+
+  if (effectiveType === "fill_in_the_blank") {
+    const escapedFocus = conceptFocus.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let blanked = primaryFact.replace(new RegExp(escapedFocus, "i"), "________");
+    if (!blanked.includes("________")) {
+      blanked = `In ${slide.title}, ________ is governed by the principle that ${primaryFact[0].toLowerCase() + primaryFact.slice(1)}`;
+    }
+    const distractorTerms: string[] = [];
+    for (const sOther of allSlides) {
+      if (distractorTerms.length >= 3) break;
+      if (sOther.num !== slide.num && sOther.facts[0]) {
+        const t = extractConceptFocusFromFact(sOther.facts[0], sOther.title);
+        if (t.toLowerCase() !== conceptFocus.toLowerCase() && !distractorTerms.includes(t)) {
+          distractorTerms.push(t);
+        }
+      }
+    }
+    for (const fbTerm of ["Homeostatic Baseline", "Reciprocal Regulation", "Collateral Pathway"]) {
+      if (distractorTerms.length >= 3) break;
+      if (!distractorTerms.includes(fbTerm)) distractorTerms.push(fbTerm);
+    }
+    const letters = ["A", "B", "C", "D"];
+    const targetIdx = (qIndex - 1) % 4;
+    const opts: string[] = [];
+    let dIdx = 0;
+    for (let i = 0; i < 4; i++) {
+      opts.push(`${letters[i]}. ${i === targetIdx ? conceptFocus : distractorTerms[dIdx++]}`);
+    }
+    return {
+      id: qIndex,
+      question: `Fill in the blank with the most accurate academic concept:\n"${blanked}"`,
+      type: "fill_in_the_blank",
+      options: opts,
+      correctAnswer: letters[targetIdx],
+      explanation: `"${conceptFocus}" accurately completes the governing principle: ${primaryFact}`,
+      misconception: "Other terms refer to separate mechanisms covered in different sections.",
+      testedFact: primaryFact,
+      topic: slide.title,
+      difficulty: "intermediate",
+      sourceRef: "",
+    };
+  }
+
   if (effectiveType === "short_answer") {
     const prompts = [
-      `Explain the core principle and significance of ${slide.title}.`,
-      `Outline the primary mechanism and key takeaways of ${slide.title}.`,
-      `Distinguish the defining features of ${slide.title} and state why they matter in practice.`,
+      `Explain the core mechanism and functional significance of ${conceptFocus} in ${slide.title}.`,
+      `Outline how ${conceptFocus} operates and state its key academic takeaways within ${slide.title}.`,
+      `Distinguish the defining features of ${conceptFocus} and explain why they matter in practice.`,
     ];
     return {
       id: qIndex,
@@ -874,17 +957,18 @@ function buildDeterministicQuestionFromSlide(
     };
   }
 
-  // Default: Varied MCQ with balanced A/B/C/D correct answer and NO slide number in stem
+  // Application-Based or Multiple Choice with balanced A/B/C/D correct answer and NO slide number in stem
+  const isApplication = effectiveType === "application";
   const letters = ["A", "B", "C", "D"];
   const targetIdx = (qIndex - 1) % 4;
-  const askFalseStatement = qIndex % 5 === 0;
+  const askFalseStatement = !isApplication && qIndex % 5 === 0;
 
   let qStem = "";
   let correctText = "";
   let distractorPool: string[] = [];
 
   if (askFalseStatement) {
-    qStem = `When evaluating ${slide.title}, which of the following statements is INCORRECT?`;
+    qStem = `When evaluating ${conceptFocus} in ${slide.title}, which of the following statements is INCORRECT?`;
     correctText = invertFactToPlausibleMisconception(primaryFact, slide.title, qIndex);
     distractorPool = [
       primaryFact,
@@ -892,17 +976,24 @@ function buildDeterministicQuestionFromSlide(
       otherFacts[1],
     ];
   } else {
-    const stems = [
-      `Which of the following accurately states a core principle of ${slide.title}?`,
-      `In the context of ${slide.title}, which statement is scientifically and academically accurate?`,
-      `What is a defining characteristic or mechanism of ${slide.title}?`,
-      `When analyzing ${slide.title}, which of the following conclusions is valid?`,
-      `Which statement best explains the operational role of ${slide.title}?`,
-      `Which of the following accurately describes how ${slide.title} functions?`,
-      `How is ${slide.title} best characterized in standard academic and examination contexts?`,
-      `Which of the following distinguishes ${slide.title} from unrelated processes?`,
+    const appStems = [
+      `In a practical or clinical scenario involving ${slide.title}, how does the mechanism of ${conceptFocus} determine the outcome?`,
+      `When applying the principles of ${slide.title} to an analytical scenario, which observation demonstrates the action of ${conceptFocus}?`,
+      `A change occurs in a system governed by ${slide.title}. Based on the mechanism of ${conceptFocus}, which principle applies?`,
     ];
-    qStem = stems[(qIndex - 1) % stems.length];
+    const mcqStems = [
+      `Which of the following accurately states a core principle of ${conceptFocus} in ${slide.title}?`,
+      `In the context of ${slide.title}, which statement regarding ${conceptFocus} is scientifically and academically accurate?`,
+      `What is a defining characteristic or mechanism of ${conceptFocus}?`,
+      `When analyzing ${slide.title}, which conclusion regarding ${conceptFocus} is valid?`,
+      `Which statement best explains the operational role of ${conceptFocus} in ${slide.title}?`,
+      `Which of the following accurately describes how ${conceptFocus} functions?`,
+      `How is ${conceptFocus} best characterized in standard academic and examination contexts?`,
+      `Which of the following distinguishes ${conceptFocus} within ${slide.title}?`,
+    ];
+    qStem = isApplication
+      ? appStems[(qIndex - 1) % appStems.length]
+      : mcqStems[(qIndex - 1) % mcqStems.length];
     correctText = primaryFact;
     distractorPool = [
       invertFactToPlausibleMisconception(primaryFact, slide.title, qIndex),
@@ -925,7 +1016,7 @@ function buildDeterministicQuestionFromSlide(
   return {
     id: qIndex,
     question: qStem,
-    type: "mcq",
+    type: isApplication ? "application" : "mcq",
     options: opts,
     correctAnswer: letters[targetIdx],
     explanation: askFalseStatement
@@ -1081,21 +1172,39 @@ export async function askStudyTutorWithAI(
       chat_history: chatHistory || [],
       teaching_mode: teachingMode,
     },
-    30000
+    35000
   );
   const pyAnswer = pyData?.response || pyData?.answer;
   if (pyAnswer && String(pyAnswer).trim().length > 0) {
     return String(pyAnswer);
   }
 
-  const systemPrompt = `You are LAMLA Guide AI's Personal Conversational AI Study Mentor & Visual Illustrator.
-Target Educational Level: ${educationalLevel}.
-Answer any question directly, clearly, and with well-spaced paragraphs and bullet points.`;
+  const systemPrompt = `You are LAMLA Guide AI — a smart, supportive, academically rigorous, and genuinely conversational AI Tutor.
+Slogan: "It's Never Too Late To Study."
+Target Educational Level: ${educationalLevel}. Teaching Mode: ${teachingMode}.
+
+1. ACADEMIC TEACHING:
+   - Explain concepts in simple language first, then move to advanced explanations when needed.
+   - Break complex mechanisms into clear step-by-step processes.
+   - Use relatable examples and analogies where helpful, and compare related concepts clearly.
+   - Correct student misconceptions politely and constructively.
+   - Answer follow-up questions using the context of the current Study Session without mixing sessions.
+   - Ask helpful check-for-understanding questions or provide hints before full answers when appropriate.
+2. INTELLIGENT & CASUAL CONVERSATIONS:
+   - Respond warmly and naturally to greetings, jokes, and casual conversations about the student's day or studies without sounding robotic or forcing a rigid lecture.`;
 
   try {
-    let prompt = `Student Question: ${question}\nEducational Level: ${educationalLevel}`;
+    let historyBlock = "";
+    if (Array.isArray(chatHistory) && chatHistory.length > 0) {
+      const turns = chatHistory
+        .slice(-12)
+        .map((m) => `${m.role === "user" ? "Student" : "LAMLA AI Tutor"}: ${String(m.content || "").slice(0, 1200)}`)
+        .join("\n");
+      historyBlock = `\n\nConversation History (Current Study Session):\n${turns}`;
+    }
+    let prompt = `Student Message: ${question}\nEducational Level: ${educationalLevel}${historyBlock}`;
     if (contextDocument) {
-      prompt += `\n\nReference Material from Student's Uploaded Slides:\n${contextDocument.slice(0, 28000)}`;
+      prompt += `\n\nCurrent Study Session Uploaded Material:\n${contextDocument.slice(0, 28000)}`;
     }
     return await callGemini(prompt, { systemPrompt, temperature: 0.35 });
   } catch {
@@ -1149,7 +1258,7 @@ Target Level: ${educationalLevel}. Subject: ${mainTopic}.
 CRITICAL INSTRUCTIONS:
 1. Ignore cover/intro slides about the school, university, faculty, department, course code, or lecturer. Focus strictly on the MAIN ACADEMIC TOPIC (${mainTopic}).
 2. Move systematically from one substantive slide to the next (## Slide X — <Topic Title> [Source: Slide X]). Never skip a slide.
-3. Explain EVERY SINGLE CONCEPT, bullet point, term, and formula on each slide in VERY DEEP DETAIL under its own sub-heading (#### 🔹 <Concept Name>), covering its definition, step-by-step mechanism (how & why it works), and real-world/exam application.
+3. Explain EVERY SINGLE CONCEPT, bullet point, term, and formula on each slide in VERY DEEP DETAIL under its own sub-heading (#### 🔹 <Concept Name>), covering its definition, step-by-step mechanism (how & why it works), classifications, comparisons, and real-world/clinical application.
 4. Leave generous blank lines and open spacing between every paragraph, subheading, and bullet point so the notes never look clustered.
 5. Use the provided Internet Research and broader textbook knowledge to thoroughly explain concepts that were only briefly listed or left unexplained on the slides.`;
 
@@ -1251,7 +1360,7 @@ export async function generateFlashcardsWithAI(
   const pyData = await callPythonBackend(
     "/api/generate-flashcards",
     { content, count: targetCount },
-    35000
+    40000
   );
   if (Array.isArray(pyData?.flashcards) && pyData.flashcards.length > 0) {
     return pyData.flashcards.map((c: any, idx: number) => ({
@@ -1259,27 +1368,35 @@ export async function generateFlashcardsWithAI(
       id: idx + 1,
       front: c.front || c.question || `Core concept ${idx + 1}`,
       back: c.back || c.answer || "",
+      difficulty: c.difficulty || (["easy", "moderate", "challenging"][idx % 3]),
     }));
   }
 
   const slides = parseSlidesFromContent(content);
+  const mainTopic = extractMainTopicTitle(slides);
   const cards: any[] = [];
+  const diffCycle = ["easy", "moderate", "challenging"];
   for (let i = 0; i < targetCount && slides.length > 0; i++) {
     const sl = slides[i % slides.length];
+    const nextSl = slides[(i + 1) % slides.length];
     const variant = Math.floor(i / slides.length);
     const fact = sl.facts[variant % sl.facts.length];
     const secondFact = sl.facts[(variant + 1) % sl.facts.length] || "";
+    const focus = extractConceptFocusFromFact(fact, sl.title);
     const prompts = [
-      `What is the core principle and mechanism of ${sl.title}?`,
-      `Explain the key components and academic significance of ${sl.title}.`,
-      `How does ${sl.title} operate and why is it important in exams?`,
+      `What is ${focus}, and what is its primary functional role in ${mainTopic}?`,
+      `How does the mechanism of ${focus} operate within ${sl.title}, and why is it significant?`,
+      nextSl.title !== sl.title
+        ? `What are the major differences and functional relationships between ${sl.title} and ${nextSl.title}?`
+        : `How does ${focus} apply in practical or clinical scenarios involving ${sl.title}?`,
     ];
     cards.push({
       id: i + 1,
       front: prompts[variant % prompts.length],
       back: secondFact && secondFact !== fact ? `${fact}\n\n• ${secondFact}` : fact,
-      term: sl.title,
-      slideRef: "",
+      term: focus,
+      difficulty: diffCycle[i % 3],
+      slideRef: sl.label,
     });
   }
   return cards;
