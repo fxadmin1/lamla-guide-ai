@@ -97,12 +97,29 @@ def _find_node() -> str:
     return node_path
 
 
+def _is_build_stale(build_id_path: Path) -> bool:
+    """Return True if any source file in src/ or next.config.ts is newer than .next/BUILD_ID."""
+    try:
+        build_mtime = build_id_path.stat().st_mtime
+        cfg_file = ROOT_DIR / "next.config.ts"
+        if cfg_file.exists() and cfg_file.stat().st_mtime > build_mtime:
+            return True
+        src_dir = ROOT_DIR / "src"
+        if src_dir.exists():
+            for p in src_dir.rglob("*"):
+                if p.is_file() and p.stat().st_mtime > build_mtime:
+                    return True
+    except OSError:
+        return True
+    return False
+
+
 def ensure_nextjs_build():
-    """Ensure .next production build exists before launching next start."""
+    """Ensure .next production build exists and is up to date before launching next start."""
     if DEV_MODE:
         return
     build_id = ROOT_DIR / ".next" / "BUILD_ID"
-    if build_id.exists() and not FORCE_BUILD:
+    if build_id.exists() and not FORCE_BUILD and not _is_build_stale(build_id):
         return
 
     node_bin = _find_node()

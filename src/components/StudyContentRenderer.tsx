@@ -11,6 +11,7 @@ import {
   Printer,
   Headphones,
   Volume2,
+  RefreshCw,
 } from "lucide-react";
 import { useAudioPlayer } from "@/contexts/AudioPlayerContext";
 import { createSpeechChunks, SpeechChunk } from "@/lib/audioEngine";
@@ -27,55 +28,124 @@ interface StudyContentRendererProps {
   badge?: string;
   badgeColor?: "blue" | "violet" | "emerald" | "amber";
   sourceType?: "summary" | "detailed_notes";
+  onRegenerate?: () => void;
+  isRegenerating?: boolean;
+  regenerateLabel?: string;
 }
 
-function formatSummaryAsFlowingProse(markdown: string): string {
+function sanitizeAcademicSummaryMarkdown(markdown: string): string {
   if (!markdown) return "";
+  const rawLines = markdown.split(/\r?\n/);
   const outLines: string[] = [];
-  const bulletBuffer: string[] = [];
   let inCode = false;
+  let tableHeaderCells: string[] | null = null;
+  let inTable = false;
 
-  const flushBullets = () => {
-    if (bulletBuffer.length === 0) return;
-    const sentences = bulletBuffer
-      .map((b) => {
-        let s = b.trim();
-        if (!s) return "";
-        if (!/[.!?]$/.test(s)) s += ".";
-        return s;
-      })
-      .filter(Boolean);
-    if (sentences.length > 0) {
-      outLines.push(sentences.join(" "));
+  const stripSlideMarkers = (text: string): string =>
+    text
+      .replace(/\[(?:Source:\s*)?(?:Slide|Page)s?\s*#?\s*\d+(?:\s*[-–,]\s*\d+)*\]/gi, "")
+      .replace(/\((?:Source:\s*)?(?:Slide|Page)s?\s*#?\s*\d+(?:\s*[-–,]\s*\d+)*\)/gi, "")
+      .replace(/\b(?:on|in|from|see)\s+(?:Slide|Page)\s*#?\s*\d+\b,?\s*/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const rawLine = rawLines[i];
+    const stripped = rawLine.trim();
+
+    if (stripped.startsWith("```")) {
+      inCode = !inCode;
+      inTable = false;
+      tableHeaderCells = null;
+      outLines.push(rawLine);
+      continue;
+    }
+
+    if (inCode) {
+      outLines.push(rawLine);
+      continue;
+    }
+
+    // Never render Markdown tables in Academic Summary — convert any legacy saved table rows into clear concept bullets
+    if (stripped.startsWith("|") && stripped.endsWith("|")) {
+      const cells = stripped
+        .slice(1, -1)
+        .split("|")
+        .map((c) => stripSlideMarkers(c.trim()));
+
+      // Separator row like | --- | --- |
+      if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === "")) {
+        inTable = true;
+        continue;
+      }
+
+      if (!inTable && tableHeaderCells === null) {
+        // Check if next line is a separator row
+        const nextStripped = (rawLines[i + 1] || "").trim();
+        if (nextStripped.startsWith("|") && /^\|[\s:-]+\|$/.test(nextStripped.replace(/\|/g, "|"))) {
+          const nextCells = nextStripped
+            .slice(1, -1)
+            .split("|")
+            .map((c) => c.trim());
+          if (nextCells.every((c) => /^:?-{2,}:?$/.test(c) || c === "")) {
+            tableHeaderCells = cells;
+            inTable = true;
+            continue;
+          }
+        }
+      }
+
+      inTable = true;
+      const nonEmpty = cells.filter((c) => c && !/^(?:slide|page)\s*#?\s*\d+$/i.test(c));
+      if (nonEmpty.length >= 2) {
+        const lead = nonEmpty[0].replace(/^\*\*|\*\*$/g, "").trim();
+        const rest = nonEmpty.slice(1).join(" — ").trim();
+        if (lead && rest) {
+          outLines.push(`- **${lead}:** ${rest}`);
+        }
+      } else if (nonEmpty.length === 1) {
+        outLines.push(`- ${nonEmpty[0]}`);
+      }
+      continue;
+    } else if (inTable) {
+      inTable = false;
+      tableHeaderCells = null;
       outLines.push("");
     }
-    bulletBuffer.length = 0;
-  };
 
-  for (const rawLine of markdown.split(/\r?\n/)) {
-    const stripped = rawLine.trim();
-    if (stripped.startsWith("```")) {
-      flushBullets();
-      inCode = !inCode;
-      outLines.push(rawLine);
+    // Sanitize headings so "Slide 1 Summary", "Slide 2 — Topic", etc. never appear
+    const headingMatch = stripped.match(/^(#{1,4})\s+(.+)$/);
+    if (headingMatch) {
+      const hashes = headingMatch[1];
+      let hText = stripSlideMarkers(headingMatch[2]);
+      hText = hText
+        .replace(/^(?:Slide|Page)\s*#?\s*\d+\s*(?:Summary|Overview|Notes)?\s*[:\-–—]?\s*/i, "")
+        .replace(/\bSlide[-\s]+by[-\s]+Slide\b\s*/gi, "")
+        .trim();
+      if (!hText || /^(?:Slide|Page)\s*#?\s*\d+$/i.test(hText)) {
+        continue;
+      }
+      // Drop superficial meta-questions like "What is on slide one?"
+      if (/^what\s+(?:is|are)\s+on\s+(?:slide|page)\b/i.test(hText)) {
+        continue;
+      }
+      outLines.push(`${hashes} ${hText}`);
       continue;
     }
-    if (inCode || stripped.startsWith("|") || stripped.startsWith("#")) {
-      flushBullets();
-      outLines.push(rawLine);
+
+    // Drop standalone "What is on slide X?" lines
+    if (/^what\s+(?:is|are)\s+on\s+(?:slide|page)\b/i.test(stripped)) {
       continue;
     }
-    const bulletMatch = stripped.match(/^(?:[-*•▪▸]|\d+[.)])\s+(.+)$/);
-    if (bulletMatch) {
-      const cleaned = bulletMatch[1].trim().replace(/\*\*([^*]+)\*\*:\s*/g, "**$1** — ");
-      bulletBuffer.push(cleaned);
-    } else {
-      if (stripped === "" && bulletBuffer.length > 0) continue;
-      flushBullets();
-      outLines.push(rawLine);
+
+    if (stripped === "") {
+      outLines.push("");
+      continue;
     }
+
+    outLines.push(stripSlideMarkers(rawLine));
   }
-  flushBullets();
+
   return outLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -84,6 +154,9 @@ export default function StudyContentRenderer({
   title,
   badge = "Summary",
   sourceType = "summary",
+  onRegenerate,
+  isRegenerating = false,
+  regenerateLabel = "Regenerate Summary",
 }: StudyContentRendererProps) {
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -91,7 +164,7 @@ export default function StudyContentRenderer({
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
   const renderedContent = React.useMemo(() => {
-    return sourceType === "summary" ? formatSummaryAsFlowingProse(content) : content;
+    return sourceType === "summary" ? sanitizeAcademicSummaryMarkdown(content) : content;
   }, [content, sourceType]);
 
   const { playTrack, playSection, session, isPlaying, pause, getSavedBookmark } = useAudioPlayer();
@@ -116,7 +189,7 @@ export default function StudyContentRenderer({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(renderedContent);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {}
@@ -135,8 +208,8 @@ export default function StudyContentRenderer({
   };
 
   const extractSectionText = (headingText: string): string => {
-    if (!headingText) return content;
-    const lines = content.split("\n");
+    if (!headingText) return renderedContent;
+    const lines = renderedContent.split("\n");
     let capturing = false;
     const captured: string[] = [];
     const cleanHeading = headingText.toLowerCase().trim();
@@ -164,7 +237,7 @@ export default function StudyContentRenderer({
     if (isCurrentAudioActive) {
       pause();
     } else {
-      playTrack(effectiveTitle, sourceType, content);
+      playTrack(effectiveTitle, sourceType, renderedContent);
     }
   };
 
@@ -192,6 +265,18 @@ export default function StudyContentRenderer({
 
           {/* Reading Controls */}
           <div className="flex items-center gap-1.5 print:hidden flex-wrap">
+            {onRegenerate && (
+              <button
+                type="button"
+                disabled={isRegenerating}
+                onClick={onRegenerate}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRegenerating ? "animate-spin" : ""}`} />
+                <span>{isRegenerating ? "Regenerating..." : regenerateLabel}</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleToggleReadAloud}
@@ -208,7 +293,7 @@ export default function StudyContentRenderer({
             {savedBookmark !== null && savedBookmark > 0 && !isCurrentAudioActive && (
               <button
                 type="button"
-                onClick={() => playTrack(effectiveTitle, sourceType, content, { startIndex: savedBookmark })}
+                onClick={() => playTrack(effectiveTitle, sourceType, renderedContent, { startIndex: savedBookmark })}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 text-xs font-medium hover:bg-blue-100/70 transition-colors"
               >
                 <Volume2 className="w-3.5 h-3.5" />
@@ -382,7 +467,7 @@ export default function StudyContentRenderer({
                       chunks={chunks}
                       effectiveTitle={effectiveTitle}
                       sourceType={sourceType}
-                      content={content}
+                      content={renderedContent}
                       playTrack={playTrack}
                       userScrolledRef={userScrolledRef}
                     >
@@ -390,6 +475,16 @@ export default function StudyContentRenderer({
                     </ParagraphItem>
                   );
                 },
+                a: ({ href, children }) => (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 dark:text-blue-400 underline underline-offset-2 hover:text-blue-700 font-medium"
+                  >
+                    {children}
+                  </a>
+                ),
                 strong: ({ children }) => (
                   <strong className="font-semibold text-slate-950 dark:text-white">
                     {children}

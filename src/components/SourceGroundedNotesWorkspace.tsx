@@ -40,6 +40,63 @@ interface SourceGroundedNotesWorkspaceProps {
   onAskTutorAboutSlide?: (slideNumber: number, slideTitle: string) => void;
 }
 
+function sanitizeAcademicNotesMarkdown(markdown: string, fallbackTitle: string): string {
+  if (!markdown) return "";
+  const lines = markdown.split(/\r?\n/);
+  const out: string[] = [];
+  let topicCounter = 0;
+
+  for (const rawLine of lines) {
+    const m = rawLine.match(/^(#{1,4})\s+(.+)$/);
+    if (!m) {
+      out.push(rawLine);
+      continue;
+    }
+    const hashes = m[1];
+    let headingText = m[2].trim();
+
+    // Remove inline [Source: Slide X] or (Slide X) from headings
+    headingText = headingText
+      .replace(/\[(?:Source:\s*)?(?:Slide|Page)s?\s*#?\s*\d+(?:\s*[-–,]\s*\d+)*\]/gi, "")
+      .replace(/\((?:Source:\s*)?(?:Slide|Page)s?\s*#?\s*\d+(?:\s*[-–,]\s*\d+)*\)/gi, "")
+      .trim();
+
+    if (hashes === "#") {
+      headingText = headingText
+        .replace(/^📚\s*/u, "")
+        .replace(/DETAILED\s+SLIDE[-\s]+BY[-\s]+SLIDE\s+STUDY\s+NOTES\s*[:\-–—]?\s*/gi, "")
+        .replace(/SLIDE[-\s]+BY[-\s]+SLIDE\s+STUDY\s+NOTES\s*[:\-–—]?\s*/gi, "")
+        .trim();
+      if (!headingText) {
+        headingText = `${fallbackTitle} — Comprehensive Study Notes`;
+      } else if (!/study notes/i.test(headingText)) {
+        headingText = `${headingText} — Comprehensive Study Notes`;
+      }
+      out.push(`# ${headingText}`);
+      continue;
+    }
+
+    // Transform legacy "## Slide 1 — Topic" or "## Slide 2: Topic" into "## 1. Topic"
+    const slidePrefixMatch = headingText.match(
+      /^(?:Slide|Page)\s*#?\s*(\d+)\s*(?:[:\-–—]+\s*(.*))?$/i
+    );
+    if (slidePrefixMatch) {
+      topicCounter += 1;
+      const extractedTopic = (slidePrefixMatch[2] || "").trim();
+      const cleanTopic =
+        extractedTopic && !/^(?:slide|page)\s*\d+$/i.test(extractedTopic)
+          ? extractedTopic
+          : `Core Lecture Concept ${topicCounter}`;
+      out.push(`${hashes} ${topicCounter}. ${cleanTopic}`);
+      continue;
+    }
+
+    out.push(`${hashes} ${headingText}`);
+  }
+
+  return out.join("\n");
+}
+
 export default function SourceGroundedNotesWorkspace({
   content,
   title,
@@ -60,14 +117,14 @@ export default function SourceGroundedNotesWorkspace({
 
   const [regeneratingSectionId, setRegeneratingSectionId] = useState<string | null>(null);
   const [activeRegenMenuHeading, setActiveRegenMenuHeading] = useState<string | null>(null);
-  const [localContent, setLocalContent] = useState(content);
+  const [localContent, setLocalContent] = useState(() => sanitizeAcademicNotesMarkdown(content, title));
 
   const { playTrack, playSection } = useAudioPlayer();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setLocalContent(content);
-  }, [content]);
+    setLocalContent(sanitizeAcademicNotesMarkdown(content, title));
+  }, [content, title]);
 
   const headings = useMemo(() => {
     const lines = localContent.split("\n");
@@ -360,7 +417,8 @@ export default function SourceGroundedNotesWorkspace({
             </h3>
             <p className="text-xs text-slate-500">
               ~{metrics.readMinutes} min read &bull; {metrics.wordCount.toLocaleString()} words &bull;{" "}
-              {metrics.citedSlideCount} slides referenced (click any <span className="text-blue-600 font-medium">Slide</span> tag to inspect source text)
+              {headings.filter((h) => h.level === 2).length || headings.length} academic topic sections
+              {metrics.citedSlideCount > 0 ? ` (${metrics.citedSlideCount} source slides grounded)` : ""}
             </p>
           </div>
 
@@ -731,6 +789,18 @@ export default function SourceGroundedNotesWorkspace({
                     <strong className="font-semibold text-slate-950 dark:text-white">
                       {children}
                     </strong>
+                  ),
+
+                  a: ({ href, children }) => (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 dark:text-blue-400 underline underline-offset-2 hover:text-blue-700 font-medium inline-flex items-center gap-1"
+                    >
+                      <span>{children}</span>
+                      <ExternalLink className="w-3 h-3 shrink-0 inline" />
+                    </a>
                   ),
 
                   hr: () => <hr className="my-10 border-slate-200 dark:border-slate-800" />,

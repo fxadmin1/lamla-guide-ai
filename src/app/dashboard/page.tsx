@@ -92,7 +92,7 @@ import WhatsAppPaymentModal from "@/components/WhatsAppPaymentModal";
 import VisualMarkdown from "@/components/VisualMarkdown";
 import { requestBrowserNotificationPermission, triggerStudyNotification } from "@/lib/studyScheduler";
 
-type StudyMode = "summarize" | "flashcards" | "quiz";
+type StudyMode = "summarize" | "notes" | "flashcards" | "quiz";
 type SessionTab = 
   | "overview" 
   | "materials" 
@@ -1043,6 +1043,7 @@ export default function StudentDashboardPage() {
 
       // Navigate to the generated tab
       if (selectedMode === "summarize") setActiveTab("summary");
+      else if (selectedMode === "notes") setActiveTab("notes");
       else if (selectedMode === "flashcards") setActiveTab("flashcards");
       else if (selectedMode === "quiz") setActiveTab("quizzes");
     } catch (err: any) {
@@ -1063,7 +1064,8 @@ export default function StudentDashboardPage() {
   // ─────────────────────────────────────────────────────────────
   const handleGenerateAdditionalResource = async (
     resourceType: "summary" | "flashcards" | "notes",
-    customCount?: number
+    customCount?: number,
+    replaceExisting?: boolean
   ) => {
     if (!activeSession) return;
     setGeneratingResource(resourceType);
@@ -1147,6 +1149,20 @@ export default function StudentDashboardPage() {
           throw new Error(data.error || "No flashcards could be generated from this session.");
         }
 
+        const existingDeckIds = flashcardDecks
+          .filter((d) => d.document_id === activeSession.id)
+          .map((d) => d.id);
+
+        if (replaceExisting && existingDeckIds.length > 0) {
+          if (user) {
+            const persistedDeckIds = existingDeckIds.filter((id) => !String(id).startsWith("local-"));
+            if (persistedDeckIds.length > 0) {
+              await supabase.from("flashcards").delete().in("deck_id", persistedDeckIds);
+              await supabase.from("flashcard_decks").delete().in("id", persistedDeckIds);
+            }
+          }
+        }
+
         let deckObj: any = null;
         if (user) {
           const { data: deck } = await supabase
@@ -1210,8 +1226,17 @@ export default function StudentDashboardPage() {
           }
         }
 
-        setFlashcardDecks((prev) => [deckObj, ...prev]);
-        setFlashcards((prev) => [...(savedCards || formattedFull), ...prev]);
+        const existingDeckIdSet = new Set(existingDeckIds);
+        setFlashcardDecks((prev) =>
+          replaceExisting
+            ? [deckObj, ...prev.filter((d) => d.document_id !== activeSession.id)]
+            : [deckObj, ...prev]
+        );
+        setFlashcards((prev) =>
+          replaceExisting
+            ? [...(savedCards || formattedFull), ...prev.filter((c) => !existingDeckIdSet.has(c.deck_id))]
+            : [...(savedCards || formattedFull), ...prev]
+        );
         setCurrentCardIndex(0);
         setIsFlipped(false);
         setDeckCompleted(false);
@@ -1408,9 +1433,10 @@ export default function StudentDashboardPage() {
       const slideRangeTitle = slidesToProcess.map((s) => `Slide ${s.slideNumber}`).join(", ");
       const contentSlice = slidesToProcess.map((s) => `--- Slide ${s.slideNumber}: ${s.title} ---\n${s.content}`).join("\n\n");
 
+      const aiHeaders = await getAiFetchHeaders();
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: aiHeaders,
         body: JSON.stringify({
           action: "quiz",
           content: contentSlice || activeSession.extracted_text,
@@ -1747,7 +1773,12 @@ export default function StudentDashboardPage() {
     setQuizTimeExpired(false);
     setQuizTimeSpentSeconds(0);
 
-    const limit = quiz.time_limit_minutes || quizTimeLimitMinutes || 15;
+    const limit =
+      typeof quiz.time_limit_minutes === "number"
+        ? quiz.time_limit_minutes
+        : typeof quizTimeLimitMinutes === "number"
+        ? quizTimeLimitMinutes
+        : 15;
     if (limit > 0) {
       setQuizTimeLeft(limit * 60);
       setQuizTimerActive(true);
@@ -2825,12 +2856,31 @@ export default function StudentDashboardPage() {
                   <div className="space-y-6">
                     {sessionSummary ? (
                       <div className="space-y-4">
+                        {(/(?:\|\s*:?-{2,}:?\s*\|)|(?:\bSlide\s*#?\s*\d+\s*Summary\b)/i.test(sessionSummary.content || "")) && (
+                          <div className="flex flex-wrap items-center justify-between gap-3 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/60 rounded-xl px-4 py-2.5">
+                            <span className="text-xs text-slate-700 dark:text-slate-300">
+                              This saved summary was generated before the Academic Concept Engine upgrade (tables have been converted to concept points). Regenerate for full multi-paragraph academic explanations.
+                            </span>
+                            <button
+                              type="button"
+                              disabled={generatingResource === "summary"}
+                              onClick={() => handleGenerateAdditionalResource("summary")}
+                              className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 shrink-0"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${generatingResource === "summary" ? "animate-spin" : ""}`} />
+                              <span>{generatingResource === "summary" ? "Regenerating..." : "Upgrade Academic Summary"}</span>
+                            </button>
+                          </div>
+                        )}
                         <StudyContentRenderer
                           content={sessionSummary.content}
                           title={activeSession.title}
-                          badge="Summary"
+                          badge="Academic Summary"
                           badgeColor="blue"
                           sourceType="summary"
+                          onRegenerate={() => handleGenerateAdditionalResource("summary")}
+                          isRegenerating={generatingResource === "summary"}
+                          regenerateLabel="Regenerate Summary"
                         />
                         <div className="flex flex-wrap items-center gap-3 pt-1">
                           <button
@@ -2841,7 +2891,7 @@ export default function StudentDashboardPage() {
                           >
                             <RefreshCw className={`w-3.5 h-3.5 ${generatingResource === "summary" ? "animate-spin" : ""}`} />
                             <span>
-                              {generatingResource === "summary" ? "Regenerating Summary..." : "Regenerate Full Summary"}
+                              {generatingResource === "summary" ? "Regenerating Summary..." : "Regenerate Academic Summary"}
                             </span>
                           </button>
 
@@ -2897,7 +2947,7 @@ export default function StudentDashboardPage() {
                     {sessionNotes && (
                       <div className="flex flex-wrap items-center justify-between gap-3 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/60 rounded-xl px-4 py-2.5">
                         <span className="text-xs text-slate-700 dark:text-slate-300">
-                          Want freshly expanded slide-by-slide notes explaining every concept on every slide with internet context?
+                          University Textbook Study Notes — Organized by academic topic with lecturer concepts, supplementary textbook context, and verified reference links.
                         </span>
                         <button
                           type="button"
@@ -2908,8 +2958,8 @@ export default function StudentDashboardPage() {
                           <RefreshCw className={`w-3.5 h-3.5 ${generatingResource === "notes" ? "animate-spin" : ""}`} />
                           <span>
                             {generatingResource === "notes"
-                              ? "Generating Ultra-Detailed Notes..."
-                              : "Regenerate Ultra-Detailed Notes"}
+                              ? "Generating Textbook Notes..."
+                              : "Regenerate Textbook Notes"}
                           </span>
                         </button>
                       </div>
@@ -3427,14 +3477,18 @@ export default function StudentDashboardPage() {
                               };
 
                               const formatQuestionTypeLabel = (type: string) => {
-                                if (isTrueFalse) return "True / False";
+                                if (isTrueFalse || type === "true_false") return "True / False";
+                                if (type === "multiple_select") return "Multiple-Select (I–IV)";
                                 if (type === "assertion_reasoning") return "Assertion & Reason";
-                                if (type === "fill_in_the_blank") return "Fill in the blank";
+                                if (type === "matching") return "Matching";
+                                if (type === "fill_in_the_blank") return "Fill-in-the-Gap";
+                                if (type === "short_answer") return "Short Answer";
+                                if (type === "application") return "Scenario / Clinical";
                                 if (type === "direct_recall") return "Direct recall";
                                 if (type === "list_enumeration") return "Enumeration";
                                 if (type === "sequence_ordering") return "Ordering";
                                 if (type === "comparison") return "Comparison";
-                                return "Multiple choice";
+                                return "Single-Best MCQ";
                               };
 
                               const showFeedback = isAnswered;
@@ -3688,7 +3742,22 @@ export default function StudentDashboardPage() {
                     </div>
                   </div>
                 ) : (() => {
-                  const filteredCards = sessionCards.filter(
+                  const isLegacySlidePrompt = (frontText: string) =>
+                    /(?:what\s+(?:is|are)\s+on\s+(?:slide|page))|(?:explain\s+(?:slide|page)\s*(?:\d+|one|two|three|four|five))|(?:what\s+does\s+the\s+(?:lecturer|slide|author)\s+(?:explain|discuss|present))/i.test(
+                      String(frontText || "")
+                    );
+
+                  const cleanCardText = (t: string) =>
+                    String(t || "")
+                      .replace(/\[(?:Source:\s*)?(?:Slide|Page)s?\s*#?\s*\d+(?:\s*[-–,]\s*\d+)*\]/gi, "")
+                      .replace(/\((?:Source:\s*)?(?:Slide|Page)s?\s*#?\s*\d+(?:\s*[-–,]\s*\d+)*\)/gi, "")
+                      .trim();
+
+                  const hasLegacyCards = sessionCards.some((c) => isLegacySlidePrompt(c.front));
+                  const nonLegacyCards = sessionCards.filter((c) => !isLegacySlidePrompt(c.front));
+                  const baseDeck = nonLegacyCards.length > 0 ? nonLegacyCards : sessionCards;
+
+                  const filteredCards = baseDeck.filter(
                     (c) =>
                       !flashcardSearchQuery.trim() ||
                       c.front?.toLowerCase().includes(flashcardSearchQuery.toLowerCase()) ||
@@ -3750,9 +3819,25 @@ export default function StudentDashboardPage() {
                       </div>
                     ) : (
                     <div className="space-y-4">
+                      {hasLegacyCards && (
+                        <div className="flex flex-wrap items-center justify-between gap-3 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/60 rounded-xl px-4 py-2.5">
+                          <span className="text-xs text-slate-700 dark:text-slate-300">
+                            Superficial slide-number cards from an older deck were hidden. Regenerate to build a fresh concept-driven active recall deck.
+                          </span>
+                          <button
+                            type="button"
+                            disabled={generatingResource === "flashcards"}
+                            onClick={() => handleGenerateAdditionalResource("flashcards", flashcardGenerateCount, true)}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors disabled:opacity-50 shrink-0"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${generatingResource === "flashcards" ? "animate-spin" : ""}`} />
+                            <span>{generatingResource === "flashcards" ? "Regenerating..." : "Regenerate Deck"}</span>
+                          </button>
+                        </div>
+                      )}
                       {/* Search & Deck Controls */}
                       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800">
-                        <div className="relative w-full sm:w-64">
+                        <div className="relative w-full sm:w-56">
                           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                           <input
                             type="search"
@@ -3774,7 +3859,7 @@ export default function StudentDashboardPage() {
                               onClick={() =>
                                 playFlashcards(
                                   `${activeSession.title} Flashcards`,
-                                  filteredCards.map((c) => ({ front: c.front, back: c.back }))
+                                  filteredCards.map((c) => ({ front: cleanCardText(c.front), back: cleanCardText(c.back) }))
                                 )
                               }
                               className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
@@ -3790,9 +3875,19 @@ export default function StudentDashboardPage() {
                           <button
                             type="button"
                             disabled={generatingResource === "flashcards"}
-                            onClick={() => handleGenerateAdditionalResource("flashcards", flashcardGenerateCount)}
+                            onClick={() => handleGenerateAdditionalResource("flashcards", flashcardGenerateCount, true)}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                            title="Replace deck with newly generated academic concept flashcards"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${generatingResource === "flashcards" ? "animate-spin" : ""}`} />
+                            <span>{generatingResource === "flashcards" ? "Regenerating..." : "Regenerate"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={generatingResource === "flashcards"}
+                            onClick={() => handleGenerateAdditionalResource("flashcards", flashcardGenerateCount, false)}
                             className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1 transition-colors disabled:opacity-50"
-                            title="Generate more flashcards"
+                            title="Append more flashcards to this deck"
                           >
                             <Plus className="w-3.5 h-3.5" />
                             <span>Add {flashcardGenerateCount}</span>
@@ -3816,16 +3911,16 @@ export default function StudentDashboardPage() {
                           >
                             <div className="w-full flex justify-between items-center text-xs text-slate-500 dark:text-slate-400 font-medium">
                               <span className="text-blue-600 dark:text-blue-400 font-semibold">
-                                {isFlipped ? "Answer" : "Prompt"}
+                                {isFlipped ? "Academic Explanation" : "Active Recall Question"}
                               </span>
                               <div className="flex items-center gap-2">
-                                <span>{activeCard.slide_reference || "Slide concept"}</span>
+                                <span>Concept Mastery</span>
                                 <button
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     playFlashcards("Active Flashcard", [
-                                      { front: activeCard.front, back: activeCard.back },
+                                      { front: cleanCardText(activeCard.front), back: cleanCardText(activeCard.back) },
                                     ]);
                                   }}
                                   className="p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
@@ -3839,7 +3934,7 @@ export default function StudentDashboardPage() {
 
                             <div className="my-auto py-6 w-full">
                               <VisualMarkdown
-                                content={isFlipped ? activeCard.back : activeCard.front}
+                                content={isFlipped ? cleanCardText(activeCard.back) : cleanCardText(activeCard.front)}
                                 compact={true}
                                 centeredText={!isFlipped}
                               />
@@ -4203,14 +4298,30 @@ export default function StudentDashboardPage() {
 
                         {(() => {
                           const q = activeQuiz.quiz_questions[currentQuestionIndex];
-                          const isShortAnswer = q.question_type === "short_answer";
-                          const isTrueFalse = q.question_type === "true_false";
+                          const qType = String(q.question_type || q.type || "mcq").toLowerCase();
+                          const isShortAnswer = qType === "short_answer" || !Array.isArray(q.options) || q.options.length === 0;
+                          const isTrueFalse = qType === "true_false";
                           const isQuestionAnswered = selectedAnswers[currentQuestionIndex] !== undefined;
                           const isQuestionRevealed = quizSubmitted || isQuestionAnswered || revealedQuestions[currentQuestionIndex];
+                          const quizBadgeLabel: Record<string, string> = {
+                            mcq: "Single-Best MCQ",
+                            multiple_select: "Multiple-Select (I–IV)",
+                            assertion_reasoning: "Assertion & Reasoning",
+                            true_false: "True / False",
+                            matching: "Matching",
+                            fill_in_the_blank: "Fill-in-the-Gap",
+                            short_answer: "Short Answer",
+                            application: "Clinical / Scenario Application",
+                          };
 
                           return (
                             <div className="space-y-5">
                               <div className="space-y-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/60 border border-blue-200/70 dark:border-blue-800/60 text-blue-700 dark:text-blue-300 text-xs font-semibold">
+                                    {quizBadgeLabel[qType] || "Single-Best MCQ"}
+                                  </span>
+                                </div>
                                 {(q.question_type === "assertion_reasoning" || q.type === "assertion_reasoning") ? (
                                   (() => {
                                     const rawQ = String(q.question_text || q.question || "").trim();
@@ -5697,11 +5808,12 @@ export default function StudentDashboardPage() {
                 <span className="block text-xs font-medium text-slate-700 dark:text-slate-300">
                   Start with
                 </span>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {[
-                    { id: "summarize", label: "Summary", desc: "Key concepts & videos", icon: FileText },
-                    { id: "flashcards", label: "Flashcards", desc: "Active recall cards", icon: Layers },
-                    { id: "quiz", label: "Practice quiz", desc: "Questions from slides", icon: Timer },
+                    { id: "summarize", label: "Academic Summary", desc: "Paragraph explanations & YouTube lessons", icon: FileText },
+                    { id: "notes", label: "Detailed Notes", desc: "University textbook depth & references", icon: BookOpen },
+                    { id: "flashcards", label: "Flashcards", desc: "Concept-driven active recall cards", icon: Layers },
+                    { id: "quiz", label: "Practice Quiz", desc: "8 examination question formats", icon: Timer },
                   ].map((mode) => {
                     const Icon = mode.icon;
                     const isLocked = mode.id === "flashcards" && !canAccessFlashcards;

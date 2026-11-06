@@ -1,10 +1,8 @@
 // LAMLA Guide AI — Progressive Web App Service Worker
 // "It's Never Too Late To Study."
 
-const CACHE_NAME = "lamla-cache-v1";
+const CACHE_NAME = "lamla-cache-v4-20261106";
 const STATIC_ASSETS = [
-  "/",
-  "/dashboard",
   "/manifest.json",
   "/icon-192.png",
   "/icon-512.png",
